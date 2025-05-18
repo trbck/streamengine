@@ -1,31 +1,49 @@
-
 import asyncio
 import coredis
 from coredis import Redis
 from coredis.stream import GroupConsumer
-from typing import List, AnyStr
+from typing import List, AnyStr, Optional
 import time
 
 class RedisConnection:
-    def __init__(self):
-        #client init
-        self.client = coredis.Redis(host='127.0.0.1', port=6379, db=0)
+    """
+    Async Redis connection manager using coredis with connection pooling.
+    Provides consumer group support for Redis Streams.
+    """
+    def __init__(self, host: str = '127.0.0.1', port: int = 6379, db: int = 0):
+        # Use connection pooling for speed
+        self.client: Redis = coredis.Redis(host=host, port=port, db=db, max_connections=10)
 
     #consumer init
-    async def consumer(self, channel: List, consumer: AnyStr, group: AnyStr):
+    async def consumer(self, channel: List[str], consumer: str, group: str) -> GroupConsumer:
+        """
+        Create a Redis stream group consumer for the given channels.
+        """
         if isinstance(channel, str):
             channel = [channel]
-
         return await GroupConsumer(
-                self.client,
-                streams = channel,
-                group = group,
-                consumer = consumer,
-                auto_acknowledge = True,
-                start_from_backlog = False
-            )
+            self.client,
+            streams=channel,
+            group=group,
+            consumer=consumer,
+            auto_acknowledge=True,
+            start_from_backlog=False
+        )
 
+    async def pipeline_xadd(self, topic: str, records: List[dict]) -> List:
+        """
+        Batch add multiple records to a Redis stream using pipeline for speed.
+        """
+        async with self.client.pipeline() as pipe:
+            for record in records:
+                await pipe.xadd(topic, record)
+            return await pipe.execute()
 
+    # --- Cythonization candidates ---
+    # If you have any CPU-bound data processing, mark here for Cythonization.
+    # Example:
+    # def heavy_processing(...):
+    #     ... # Move to .pyx and use nogil for true parallelism
 
 async def tests():
 
