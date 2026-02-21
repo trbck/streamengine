@@ -1,4 +1,5 @@
 import redis.asyncio as redis
+from redis.asyncio import Lock
 import pickle
 import time
 import asyncio
@@ -12,12 +13,12 @@ class RedisObjectStorage:
         self.redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=log_level)
-        
+
     async def store_with_pickle(self, key, obj):
         """
         Stores a Python object in Redis using pickle serialization with a lock specific to the key.
         """
-        lock = redis.lock.Lock(self.redis_client, f"lock:{key}")
+        lock = Lock(self.redis_client, f"lock:{key}")
         async with lock:
             start_time = time.time()
             pickled_obj = pickle.dumps(obj)

@@ -25,8 +25,7 @@ class AgentTaskDecorator:
     """
     Decorator for registering agent (consumer) tasks with Venusian.
     """
-    def __init__(self, stream: str, group: Optional[str] = None, concurrency: int = 1, processes: Optional[int] = None, helper: bool = False):
-        self.helper = helper
+    def __init__(self, stream: str, group: Optional[str] = None, concurrency: int = 1, processes: Optional[int] = None):
         self.config = ConsumerConfig("agent", stream, group, concurrency, processes)
 
     def __call__(self, wrapped: Callable) -> Any:
@@ -35,11 +34,8 @@ class AgentTaskDecorator:
             def __init__(self, wrapped_func: Callable):
                 self.callback = wrapped
             def on_scan(self, scanner, name, obj):
-                if not me.helper:
-                    frm = inspect.stack()[len(inspect.stack()) - 1]
-                    me.config.mod = inspect.getmodule(frm[0])
-                else:
-                    me.config.mod = inspect.getmodule(helpers)
+                frm = inspect.stack()[len(inspect.stack()) - 1]
+                me.config.mod = inspect.getmodule(frm[0])
                 me.config.obj_name = self.callback.__name__
                 me.config.inner_vars = inspect.signature(self.callback)
                 scanner.registry.add(me.config)
@@ -53,8 +49,7 @@ class TimerTaskDecorator:
     """
     Decorator for registering timer tasks with Venusian.
     """
-    def __init__(self, t: int, helper: bool = False):
-        self.helper = helper
+    def __init__(self, t: int):
         self.config = TimerConfig("timer", t)
     def __call__(self, wrapped: Callable) -> Any:
         me = self
@@ -62,11 +57,8 @@ class TimerTaskDecorator:
             def __init__(self, wrapped_func: Callable):
                 self.callback = wrapped
             def on_scan(self, scanner, name, obj):
-                if not me.helper:
-                    frm = inspect.stack()[5]
-                    me.config.mod = inspect.getmodule(frm[0])
-                else:
-                    me.config.mod = inspect.getmodule(helpers)
+                frm = inspect.stack()[5]
+                me.config.mod = inspect.getmodule(frm[0])
                 me.config.obj_name = self.callback.__name__
                 me.config.inner_vars = inspect.signature(self.callback)
                 scanner.registry.add(me.config)

@@ -24,7 +24,7 @@ async def job1(record: Message):
 
 @app.agent("test_channel1", concurrency=1, group="test")
 async def job2(record: Message):
-    #value1 = await app.storage.read('key1')
+    value1 = await app.storage.read('key1')
     # Latency calculation (if sent and received are available)
     if record.sent is not None and record.received is not None:
         latency_ms = (record.received - record.sent) * 1000
