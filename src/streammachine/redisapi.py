@@ -84,8 +84,13 @@ class RedisConnection:
 
     async def close(self) -> None:
         """Close the Redis connection pool."""
-        await self.client.close()
-        logger.debug("Redis connection closed")
+        try:
+            await self.client.quit()
+            logger.debug("Redis connection closed")
+        except Exception as e:
+            # Connection may not have been established (lazy connection),
+            # or pool may not be fully initialized. This is fine during shutdown.
+            logger.debug(f"Redis connection close skipped: {e}")
 
     async def consumer(
         self,

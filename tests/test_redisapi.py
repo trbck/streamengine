@@ -51,25 +51,25 @@ class TestRedisConnection:
         """Test closing connection."""
         with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
-            mock_client.close = AsyncMock()
+            mock_client.quit = AsyncMock()
             mock_redis.return_value = mock_client
 
             conn = RedisConnection()
             await conn.close()
-            mock_client.close.assert_called_once()
+            mock_client.quit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test using RedisConnection as async context manager."""
         with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
-            mock_client.close = AsyncMock()
+            mock_client.quit = AsyncMock()
             mock_redis.return_value = mock_client
 
             async with RedisConnection() as conn:
                 assert conn is not None
 
-            mock_client.close.assert_called_once()
+            mock_client.quit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_health_check_success(self):
