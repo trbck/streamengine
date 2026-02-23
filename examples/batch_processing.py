@@ -6,7 +6,7 @@ using the send_batch method.
 
 Run with: python batch_processing.py
 """
-from streammachine import App, Message
+from streamengine import App, Message
 
 
 def main():

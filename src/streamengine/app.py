@@ -65,7 +65,7 @@ class App:
         max_threads: int = 5,
     ):
         """
-        Initialize the StreamMachine application.
+        Initialize the StreamEngine application.
 
         Args:
             name: Application name for logging

@@ -22,9 +22,9 @@ REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
 REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "10"))
 
 # Stream processing defaults
-RECORDS: int = int(os.getenv("STREAMMACHINE_RECORDS", "10000"))
-COUNT: int = int(os.getenv("STREAMMACHINE_COUNT", "10"))  # Number of messages the redis connection is to collect at once.
-DEFAULT_CONSUMER_GROUP: str = os.getenv("STREAMMACHINE_DEFAULT_GROUP", "eventengine")
+RECORDS: int = int(os.getenv("STREAMENGINE_RECORDS", "10000"))
+COUNT: int = int(os.getenv("STREAMENGINE_COUNT", "10"))  # Number of messages the redis connection is to collect at once.
+DEFAULT_CONSUMER_GROUP: str = os.getenv("STREAMENGINE_DEFAULT_GROUP", "eventengine")
 
 T = TypeVar('T')
 

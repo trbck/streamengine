@@ -1,5 +1,5 @@
 """
-Cython-accelerated decoding utilities for StreamMachine.
+Cython-accelerated decoding utilities for StreamEngine.
 
 This module provides optimized functions for decoding Redis stream data.
 If the Cython extension is not compiled, the pure Python fallback is used.

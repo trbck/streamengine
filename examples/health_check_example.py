@@ -6,7 +6,7 @@ This example demonstrates health check and graceful shutdown features.
 Run with: python health_check_example.py
 """
 import asyncio
-from streammachine import App, Message
+from streamengine import App, Message
 
 
 def main():

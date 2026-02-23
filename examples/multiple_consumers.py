@@ -6,7 +6,7 @@ with different consumer groups for parallel processing.
 
 Run with: python multiple_consumers.py
 """
-from streammachine import App, Message
+from streamengine import App, Message
 
 
 def main():

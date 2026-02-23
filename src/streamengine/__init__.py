@@ -1,5 +1,5 @@
 """
-StreamMachine - Redis Streams Processing Framework
+StreamEngine - Redis Streams Processing Framework
 
 A simple, lightweight Redis Streams processing library built on coredis.
 Provides decorator-based agent/timer registration with venusian discovery.

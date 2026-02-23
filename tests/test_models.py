@@ -1,11 +1,11 @@
 """
-Tests for streammachine.models module.
+Tests for streamengine.models module.
 """
 import pytest
 import pandas as pd
 from dataclasses import asdict
 
-from streammachine.models import (
+from streamengine.models import (
     Message,
     AppConfig,
     ConsumerConfig,

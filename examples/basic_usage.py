@@ -1,7 +1,7 @@
 """
-Basic StreamMachine Usage Example
+Basic StreamEngine Usage Example
 
-This example demonstrates the core features of StreamMachine:
+This example demonstrates the core features of StreamEngine:
 - Creating an App instance
 - Registering agents (message consumers)
 - Registering timers (periodic tasks)
@@ -11,7 +11,7 @@ This example demonstrates the core features of StreamMachine:
 Run with: python basic_usage.py
 """
 import asyncio
-from streammachine import App, Message
+from streamengine import App, Message
 
 
 def main():
@@ -56,7 +56,7 @@ def main():
             print(f"[Output] Latency: {latency_ms:.2f} ms")
 
     # Start the application
-    print("Starting StreamMachine basic example...")
+    print("Starting StreamEngine basic example...")
     print("Press Ctrl+C to stop\n")
     try:
         app.start()

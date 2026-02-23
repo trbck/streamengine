@@ -1,5 +1,5 @@
 """
-Tests for streammachine.objstorage module.
+Tests for streamengine.objstorage module.
 
 Note: These tests require a running Redis server and the 'redis' package.
 They are marked as integration tests and will be skipped if Redis is not available.
@@ -11,7 +11,7 @@ redis = pytest.importorskip("redis")
 
 import numpy as np
 
-from streammachine.objstorage.redisobjstore import RedisObjectStorage
+from streamengine.objstorage.redisobjstore import RedisObjectStorage
 
 
 def check_redis_available():

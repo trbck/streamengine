@@ -6,7 +6,7 @@ state between agents and timers.
 
 Run with: python storage_example.py
 """
-from streammachine import App, Message
+from streamengine import App, Message
 
 
 def main():

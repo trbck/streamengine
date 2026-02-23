@@ -1,11 +1,11 @@
 """
-Tests for streammachine.app module.
+Tests for streamengine.app module.
 """
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
-from streammachine.app import App, agent_container, timer_container
-from streammachine.models import ConsumerConfig, TimerConfig
+from streamengine.app import App, agent_container, timer_container
+from streamengine.models import ConsumerConfig, TimerConfig
 
 
 class TestApp:
@@ -43,7 +43,7 @@ class TestApp:
 
     def test_storage_initialized(self):
         """Test that storage is initialized."""
-        from streammachine.storage import Storage
+        from streamengine.storage import Storage
         Storage.reset_instance()
         app = App(to_scan=False)
         assert app.storage is not None
@@ -68,7 +68,7 @@ class TestAgentContainer:
         )
 
         # We can't fully test the consumer without Redis, but we can check it creates
-        from streammachine.app import StreamConsumer
+        from streamengine.app import StreamConsumer
         # This test verifies the config is passed correctly
         assert config.topic == "test_topic"
         assert config.group == "test_group"

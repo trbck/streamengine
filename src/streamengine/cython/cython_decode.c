@@ -4,12 +4,12 @@
 {
     "distutils": {
         "depends": [],
-        "name": "streammachine.cython_decode",
+        "name": "streamengine.cython_decode",
         "sources": [
-            "/home/trbck/workspace/streammachine/cython_decode.pyx"
+            "/home/trbck/workspace/streamengine/cython_decode.pyx"
         ]
     },
-    "module_name": "streammachine.cython_decode"
+    "module_name": "streamengine.cython_decode"
 }
 END: Cython Metadata */
 
@@ -1117,8 +1117,8 @@ static CYTHON_INLINE float __PYX_NAN() {
   #endif
 #endif
 
-#define __PYX_HAVE__streammachine__cython_decode
-#define __PYX_HAVE_API__streammachine__cython_decode
+#define __PYX_HAVE__streamengine__cython_decode
+#define __PYX_HAVE_API__streamengine__cython_decode
 /* Early includes */
 #include <string.h>
 #include <stdio.h>
@@ -2192,14 +2192,14 @@ static int __Pyx_State_RemoveModule(void*);
 
 /* Module declarations from "cpython.unicode" */
 
-/* Module declarations from "streammachine.cython_decode" */
+/* Module declarations from "streamengine.cython_decode" */
 /* #### Code section: typeinfo ### */
 /* #### Code section: before_global_var ### */
-#define __Pyx_MODULE_NAME "streammachine.cython_decode"
-extern int __pyx_module_is_main_streammachine__cython_decode;
-int __pyx_module_is_main_streammachine__cython_decode = 0;
+#define __Pyx_MODULE_NAME "streamengine.cython_decode"
+extern int __pyx_module_is_main_streamengine__cython_decode;
+int __pyx_module_is_main_streamengine__cython_decode = 0;
 
-/* Implementation of "streammachine.cython_decode" */
+/* Implementation of "streamengine.cython_decode" */
 /* #### Code section: global_var ### */
 /* #### Code section: string_decls ### */
 static const char __pyx_k_[] = "?";
@@ -2224,10 +2224,10 @@ static const char __pyx_k_cython_decode_pyx[] = "cython_decode.pyx";
 static const char __pyx_k_asyncio_coroutines[] = "asyncio.coroutines";
 static const char __pyx_k_cline_in_traceback[] = "cline_in_traceback";
 static const char __pyx_k_decode_dict_bytes_to_utf8[] = "decode_dict_bytes_to_utf8";
-static const char __pyx_k_streammachine_cython_decode[] = "streammachine.cython_decode";
+static const char __pyx_k_streamengine_cython_decode[] = "streamengine.cython_decode";
 static const char __pyx_k_A_5_F_q_1G1A_q_1G1A_1_q_z9TTUU[] = "\200\001\360\010\000\005\025\220A\360\010\000\005\t\210\003\2105\220\004\220F\230!\330\010\037\230q\240\003\2401\240G\2501\250A\330\010\037\230q\240\003\2401\240G\2501\250A\330\010\013\2101\320\014'\240q\250\007\250z\3209T\320TU\320U\\\320\\]\330\004\013\2101";
 /* #### Code section: decls ### */
-static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_utf8(CYTHON_UNUSED PyObject *__pyx_self, PyObject *__pyx_v_data); /* proto */
+static PyObject *__pyx_pf_13streamengine_13cython_decode_decode_dict_bytes_to_utf8(CYTHON_UNUSED PyObject *__pyx_self, PyObject *__pyx_v_data); /* proto */
 /* #### Code section: late_includes ### */
 /* #### Code section: module_state ### */
 /* SmallCodeConfig */
@@ -2322,7 +2322,7 @@ static __pyx_mstatetype * const __pyx_mstate_global = &__pyx_mstate_global_stati
 #define __pyx_n_u_out __pyx_string_tab[15]
 #define __pyx_n_u_pop __pyx_string_tab[16]
 #define __pyx_n_u_qualname __pyx_string_tab[17]
-#define __pyx_n_u_streammachine_cython_decode __pyx_string_tab[18]
+#define __pyx_n_u_streamengine_cython_decode __pyx_string_tab[18]
 #define __pyx_n_u_test __pyx_string_tab[19]
 #define __pyx_n_u_v __pyx_string_tab[20]
 #define __pyx_n_u_v_len __pyx_string_tab[21]
@@ -2378,7 +2378,7 @@ static CYTHON_SMALL_CODE int __pyx_m_traverse(PyObject *m, visitproc visit, void
 #endif
 /* #### Code section: module_code ### */
 
-/* "streammachine/cython_decode.pyx":5
+/* "streamengine/cython_decode.pyx":5
  * from cpython.unicode cimport PyUnicode_FromStringAndSize
  * 
  * def decode_dict_bytes_to_utf8(data):             # <<<<<<<<<<<<<<
@@ -2387,16 +2387,16 @@ static CYTHON_SMALL_CODE int __pyx_m_traverse(PyObject *m, visitproc visit, void
 */
 
 /* Python wrapper */
-static PyObject *__pyx_pw_13streammachine_13cython_decode_1decode_dict_bytes_to_utf8(PyObject *__pyx_self, 
+static PyObject *__pyx_pw_13streamengine_13cython_decode_1decode_dict_bytes_to_utf8(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
 PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 #else
 PyObject *__pyx_args, PyObject *__pyx_kwds
 #endif
 ); /*proto*/
-PyDoc_STRVAR(__pyx_doc_13streammachine_13cython_decode_decode_dict_bytes_to_utf8, "\n    Decode a dict of bytes->bytes to str->str as fast as possible.\n    ");
-static PyMethodDef __pyx_mdef_13streammachine_13cython_decode_1decode_dict_bytes_to_utf8 = {"decode_dict_bytes_to_utf8", (PyCFunction)(void(*)(void))(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_13streammachine_13cython_decode_1decode_dict_bytes_to_utf8, __Pyx_METH_FASTCALL|METH_KEYWORDS, __pyx_doc_13streammachine_13cython_decode_decode_dict_bytes_to_utf8};
-static PyObject *__pyx_pw_13streammachine_13cython_decode_1decode_dict_bytes_to_utf8(PyObject *__pyx_self, 
+PyDoc_STRVAR(__pyx_doc_13streamengine_13cython_decode_decode_dict_bytes_to_utf8, "\n    Decode a dict of bytes->bytes to str->str as fast as possible.\n    ");
+static PyMethodDef __pyx_mdef_13streamengine_13cython_decode_1decode_dict_bytes_to_utf8 = {"decode_dict_bytes_to_utf8", (PyCFunction)(void(*)(void))(__Pyx_PyCFunction_FastCallWithKeywords)__pyx_pw_13streamengine_13cython_decode_1decode_dict_bytes_to_utf8, __Pyx_METH_FASTCALL|METH_KEYWORDS, __pyx_doc_13streamengine_13cython_decode_decode_dict_bytes_to_utf8};
+static PyObject *__pyx_pw_13streamengine_13cython_decode_1decode_dict_bytes_to_utf8(PyObject *__pyx_self, 
 #if CYTHON_METH_FASTCALL
 PyObject *const *__pyx_args, Py_ssize_t __pyx_nargs, PyObject *__pyx_kwds
 #else
@@ -2458,11 +2458,11 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   for (Py_ssize_t __pyx_temp=0; __pyx_temp < (Py_ssize_t)(sizeof(values)/sizeof(values[0])); ++__pyx_temp) {
     Py_XDECREF(values[__pyx_temp]);
   }
-  __Pyx_AddTraceback("streammachine.cython_decode.decode_dict_bytes_to_utf8", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __Pyx_AddTraceback("streamengine.cython_decode.decode_dict_bytes_to_utf8", __pyx_clineno, __pyx_lineno, __pyx_filename);
   __Pyx_RefNannyFinishContext();
   return NULL;
   __pyx_L4_argument_unpacking_done:;
-  __pyx_r = __pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_utf8(__pyx_self, __pyx_v_data);
+  __pyx_r = __pyx_pf_13streamengine_13cython_decode_decode_dict_bytes_to_utf8(__pyx_self, __pyx_v_data);
 
   /* function exit code */
   for (Py_ssize_t __pyx_temp=0; __pyx_temp < (Py_ssize_t)(sizeof(values)/sizeof(values[0])); ++__pyx_temp) {
@@ -2472,7 +2472,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   return __pyx_r;
 }
 
-static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_utf8(CYTHON_UNUSED PyObject *__pyx_self, PyObject *__pyx_v_data) {
+static PyObject *__pyx_pf_13streamengine_13cython_decode_decode_dict_bytes_to_utf8(CYTHON_UNUSED PyObject *__pyx_self, PyObject *__pyx_v_data) {
   PyObject *__pyx_v_out = 0;
   PyObject *__pyx_v_k = 0;
   PyObject *__pyx_v_v = 0;
@@ -2494,7 +2494,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("decode_dict_bytes_to_utf8", 0);
 
-  /* "streammachine/cython_decode.pyx":9
+  /* "streamengine/cython_decode.pyx":9
  *     Decode a dict of bytes->bytes to str->str as fast as possible.
  *     """
  *     cdef dict out = {}             # <<<<<<<<<<<<<<
@@ -2506,7 +2506,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
   __pyx_v_out = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "streammachine/cython_decode.pyx":13
+  /* "streamengine/cython_decode.pyx":13
  *     cdef char *k_ptr, *v_ptr
  *     cdef Py_ssize_t k_len, v_len
  *     for k, v in data.items():             # <<<<<<<<<<<<<<
@@ -2536,7 +2536,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
     __Pyx_XDECREF_SET(__pyx_v_v, ((PyObject*)__pyx_t_6));
     __pyx_t_6 = 0;
 
-    /* "streammachine/cython_decode.pyx":14
+    /* "streamengine/cython_decode.pyx":14
  *     cdef Py_ssize_t k_len, v_len
  *     for k, v in data.items():
  *         PyBytes_AsStringAndSize(k, &k_ptr, &k_len)             # <<<<<<<<<<<<<<
@@ -2545,7 +2545,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
 */
     __pyx_t_7 = PyBytes_AsStringAndSize(__pyx_v_k, (&__pyx_v_k_ptr), (&__pyx_v_k_len)); if (unlikely(__pyx_t_7 == ((int)-1))) __PYX_ERR(0, 14, __pyx_L1_error)
 
-    /* "streammachine/cython_decode.pyx":15
+    /* "streamengine/cython_decode.pyx":15
  *     for k, v in data.items():
  *         PyBytes_AsStringAndSize(k, &k_ptr, &k_len)
  *         PyBytes_AsStringAndSize(v, &v_ptr, &v_len)             # <<<<<<<<<<<<<<
@@ -2554,7 +2554,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
 */
     __pyx_t_7 = PyBytes_AsStringAndSize(__pyx_v_v, (&__pyx_v_v_ptr), (&__pyx_v_v_len)); if (unlikely(__pyx_t_7 == ((int)-1))) __PYX_ERR(0, 15, __pyx_L1_error)
 
-    /* "streammachine/cython_decode.pyx":16
+    /* "streamengine/cython_decode.pyx":16
  *         PyBytes_AsStringAndSize(k, &k_ptr, &k_len)
  *         PyBytes_AsStringAndSize(v, &v_ptr, &v_len)
  *         out[PyUnicode_FromStringAndSize(k_ptr, k_len)] = PyUnicode_FromStringAndSize(v_ptr, v_len)             # <<<<<<<<<<<<<<
@@ -2570,7 +2570,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "streammachine/cython_decode.pyx":17
+  /* "streamengine/cython_decode.pyx":17
  *         PyBytes_AsStringAndSize(v, &v_ptr, &v_len)
  *         out[PyUnicode_FromStringAndSize(k_ptr, k_len)] = PyUnicode_FromStringAndSize(v_ptr, v_len)
  *     return out             # <<<<<<<<<<<<<<
@@ -2580,7 +2580,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
   __pyx_r = __pyx_v_out;
   goto __pyx_L0;
 
-  /* "streammachine/cython_decode.pyx":5
+  /* "streamengine/cython_decode.pyx":5
  * from cpython.unicode cimport PyUnicode_FromStringAndSize
  * 
  * def decode_dict_bytes_to_utf8(data):             # <<<<<<<<<<<<<<
@@ -2593,7 +2593,7 @@ static PyObject *__pyx_pf_13streammachine_13cython_decode_decode_dict_bytes_to_u
   __Pyx_XDECREF(__pyx_t_1);
   __Pyx_XDECREF(__pyx_t_5);
   __Pyx_XDECREF(__pyx_t_6);
-  __Pyx_AddTraceback("streammachine.cython_decode.decode_dict_bytes_to_utf8", __pyx_clineno, __pyx_lineno, __pyx_filename);
+  __Pyx_AddTraceback("streamengine.cython_decode.decode_dict_bytes_to_utf8", __pyx_clineno, __pyx_lineno, __pyx_filename);
   __pyx_r = NULL;
   __pyx_L0:;
   __Pyx_XDECREF(__pyx_v_out);
@@ -2961,13 +2961,13 @@ __Pyx_RefNannySetupContext("PyInit_cython_decode", 0);
   if (__Pyx_InitConstants(__pyx_mstate) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   stringtab_initialized = 1;
   if (__Pyx_InitGlobals() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
-  if (__pyx_module_is_main_streammachine__cython_decode) {
+  if (__pyx_module_is_main_streamengine__cython_decode) {
     if (PyObject_SetAttr(__pyx_m, __pyx_mstate_global->__pyx_n_u_name, __pyx_mstate_global->__pyx_n_u_main) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   }
   {
     PyObject *modules = PyImport_GetModuleDict(); if (unlikely(!modules)) __PYX_ERR(0, 1, __pyx_L1_error)
-    if (!PyDict_GetItemString(modules, "streammachine.cython_decode")) {
-      if (unlikely((PyDict_SetItemString(modules, "streammachine.cython_decode", __pyx_m) < 0))) __PYX_ERR(0, 1, __pyx_L1_error)
+    if (!PyDict_GetItemString(modules, "streamengine.cython_decode")) {
+      if (unlikely((PyDict_SetItemString(modules, "streamengine.cython_decode", __pyx_m) < 0))) __PYX_ERR(0, 1, __pyx_L1_error)
     }
   }
   /*--- Builtin init code ---*/
@@ -2985,19 +2985,19 @@ __Pyx_RefNannySetupContext("PyInit_cython_decode", 0);
   (void)__Pyx_modinit_function_import_code(__pyx_mstate);
   /*--- Execution code ---*/
 
-  /* "streammachine/cython_decode.pyx":5
+  /* "streamengine/cython_decode.pyx":5
  * from cpython.unicode cimport PyUnicode_FromStringAndSize
  * 
  * def decode_dict_bytes_to_utf8(data):             # <<<<<<<<<<<<<<
  *     """
  *     Decode a dict of bytes->bytes to str->str as fast as possible.
 */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13streammachine_13cython_decode_1decode_dict_bytes_to_utf8, 0, __pyx_mstate_global->__pyx_n_u_decode_dict_bytes_to_utf8, NULL, __pyx_mstate_global->__pyx_n_u_streammachine_cython_decode, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[0])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 5, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_13streamengine_13cython_decode_1decode_dict_bytes_to_utf8, 0, __pyx_mstate_global->__pyx_n_u_decode_dict_bytes_to_utf8, NULL, __pyx_mstate_global->__pyx_n_u_streamengine_cython_decode, __pyx_mstate_global->__pyx_d, ((PyObject *)__pyx_mstate_global->__pyx_codeobj_tab[0])); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
   if (PyDict_SetItem(__pyx_mstate_global->__pyx_d, __pyx_mstate_global->__pyx_n_u_decode_dict_bytes_to_utf8, __pyx_t_2) < 0) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "streammachine/cython_decode.pyx":1
+  /* "streamengine/cython_decode.pyx":1
  * # cython: language_level=3             # <<<<<<<<<<<<<<
  * from cpython.bytes cimport PyBytes_AsStringAndSize
  * from cpython.unicode cimport PyUnicode_FromStringAndSize
@@ -3014,7 +3014,7 @@ __Pyx_RefNannySetupContext("PyInit_cython_decode", 0);
   __Pyx_XDECREF(__pyx_t_2);
   if (__pyx_m) {
     if (__pyx_mstate->__pyx_d && stringtab_initialized) {
-      __Pyx_AddTraceback("init streammachine.cython_decode", __pyx_clineno, __pyx_lineno, __pyx_filename);
+      __Pyx_AddTraceback("init streamengine.cython_decode", __pyx_clineno, __pyx_lineno, __pyx_filename);
     }
     #if !CYTHON_USE_MODULE_STATE
     Py_CLEAR(__pyx_m);
@@ -3028,7 +3028,7 @@ __Pyx_RefNannySetupContext("PyInit_cython_decode", 0);
     }
     #endif
   } else if (!PyErr_Occurred()) {
-    PyErr_SetString(PyExc_ImportError, "init streammachine.cython_decode");
+    PyErr_SetString(PyExc_ImportError, "init streamengine.cython_decode");
   }
   __pyx_L0:;
   __Pyx_RefNannyFinishContext();
@@ -3083,7 +3083,7 @@ static const __Pyx_StringTabEntry __pyx_string_tab[] = {
   {__pyx_k_out, sizeof(__pyx_k_out), 0, 1, 1}, /* PyObject cname: __pyx_n_u_out */
   {__pyx_k_pop, sizeof(__pyx_k_pop), 0, 1, 1}, /* PyObject cname: __pyx_n_u_pop */
   {__pyx_k_qualname, sizeof(__pyx_k_qualname), 0, 1, 1}, /* PyObject cname: __pyx_n_u_qualname */
-  {__pyx_k_streammachine_cython_decode, sizeof(__pyx_k_streammachine_cython_decode), 0, 1, 1}, /* PyObject cname: __pyx_n_u_streammachine_cython_decode */
+  {__pyx_k_streamengine_cython_decode, sizeof(__pyx_k_streamengine_cython_decode), 0, 1, 1}, /* PyObject cname: __pyx_n_u_streamengine_cython_decode */
   {__pyx_k_test, sizeof(__pyx_k_test), 0, 1, 1}, /* PyObject cname: __pyx_n_u_test */
   {__pyx_k_v, sizeof(__pyx_k_v), 0, 1, 1}, /* PyObject cname: __pyx_n_u_v */
   {__pyx_k_v_len, sizeof(__pyx_k_v_len), 0, 1, 1}, /* PyObject cname: __pyx_n_u_v_len */

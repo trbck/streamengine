@@ -3,7 +3,7 @@ import random
 import string
 
 try:
-    from streammachine.cython import decode_dict_bytes_to_utf8, _has_cython_decode
+    from streamengine.cython import decode_dict_bytes_to_utf8, _has_cython_decode
     has_cython = _has_cython_decode
 except ImportError:
     decode_dict_bytes_to_utf8 = None

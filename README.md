@@ -1,6 +1,6 @@
-# StreamMachine
+# StreamEngine
 
-StreamMachine is a high-performance, async-first Python framework for distributed stream processing using Redis Streams. It is designed for ultra-low-latency, high-throughput event-driven applications, and is ready for both I/O-bound and CPU-bound workloads (with Cython acceleration support).
+StreamEngine is a high-performance, async-first Python framework for distributed stream processing using Redis Streams. It is designed for ultra-low-latency, high-throughput event-driven applications, and is ready for both I/O-bound and CPU-bound workloads (with Cython acceleration support).
 
 ## Features
 - **Async-first**: All I/O and orchestration is async for lowest latency.
@@ -15,7 +15,7 @@ StreamMachine is a high-performance, async-first Python framework for distribute
 
 ## File Structure
 ```
-streammachine/
+streamengine/
 ├── app.py                # Main application logic and event loop
 ├── models.py             # Central dataclasses and data model utilities
 ├── redisapi.py           # Async Redis connection and stream helpers

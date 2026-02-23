@@ -1,7 +1,7 @@
 import asyncio
 import time
 import uuid
-from streammachine import App, Message
+from streamengine import App, Message
 
 NUM_MESSAGES = 10
 TOPIC = f"test_bench_{uuid.uuid4()}"

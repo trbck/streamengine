@@ -1,8 +1,8 @@
-# StreamMachine Development Plan
+# StreamEngine Development Plan
 
 ## Executive Summary
 
-StreamMachine is an async-first Python framework for distributed stream processing using Redis Streams. This document combines the code review findings, improvement plan, and feature roadmap.
+StreamEngine is an async-first Python framework for distributed stream processing using Redis Streams. This document combines the code review findings, improvement plan, and feature roadmap.
 
 ---
 
@@ -102,7 +102,7 @@ Created comprehensive test suite:
 **Status:** Reorganized
 
 ```
-streammachine/
+streamengine/
 ├── examples/                 # Example scripts
 │   ├── README.md
 │   ├── basic_usage.py
@@ -112,7 +112,7 @@ streammachine/
 │   ├── batch_processing.py
 │   ├── benchmark_latency.py
 │   └── benchmark_decode.py
-├── src/streammachine/        # Main package
+├── src/streamengine/        # Main package
 │   ├── __init__.py
 │   ├── app.py
 │   ├── models.py
@@ -284,8 +284,8 @@ streammachine/
 - ✅ Reorganized project structure
 - ✅ Created comprehensive test suite (56 tests passing)
 - ✅ Added examples directory with multiple example scripts
-- ✅ Moved cython files to `src/streammachine/cython/`
-- ✅ Moved objstorage to `src/streammachine/objstorage/`
+- ✅ Moved cython files to `src/streamengine/cython/`
+- ✅ Moved objstorage to `src/streamengine/objstorage/`
 - ✅ Updated `__init__.py` with proper exports
 - ✅ Added version information to package
 - ✅ Fixed coredis deprecation warning (`coredis.patterns.streams`)

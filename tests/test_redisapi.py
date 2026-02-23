@@ -1,5 +1,5 @@
 """
-Tests for streammachine.redisapi module.
+Tests for streamengine.redisapi module.
 
 Note: These tests mock Redis connections to avoid requiring a running Redis server.
 For integration tests with real Redis, use the integration test markers.
@@ -7,7 +7,7 @@ For integration tests with real Redis, use the integration test markers.
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from streammachine.redisapi import RedisConnection
+from streamengine.redisapi import RedisConnection
 
 
 class TestRedisConnection:
@@ -15,14 +15,14 @@ class TestRedisConnection:
 
     def test_connection_creation_default(self):
         """Test creating RedisConnection with defaults."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_redis.return_value = MagicMock()
             conn = RedisConnection()
             assert conn.client is not None
 
     def test_connection_creation_with_params(self):
         """Test creating RedisConnection with custom parameters."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_redis.return_value = MagicMock()
             conn = RedisConnection(
                 host="custom_host",
@@ -40,7 +40,7 @@ class TestRedisConnection:
 
     def test_connection_creation_with_url(self):
         """Test creating RedisConnection with URL."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_redis.from_url = MagicMock(return_value=MagicMock())
             conn = RedisConnection(url="redis://custom:6379/2")
             assert conn.client is not None
@@ -49,7 +49,7 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_close_method(self):
         """Test closing connection."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_client.close = AsyncMock()
             mock_redis.return_value = mock_client
@@ -61,7 +61,7 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test using RedisConnection as async context manager."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_client.close = AsyncMock()
             mock_redis.return_value = mock_client
@@ -74,7 +74,7 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_health_check_success(self):
         """Test health check when Redis is healthy."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_client.ping = AsyncMock(return_value=True)
             mock_redis.return_value = mock_client
@@ -86,7 +86,7 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_health_check_failure(self):
         """Test health check when Redis is unavailable."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_client.ping = AsyncMock(side_effect=Exception("Connection failed"))
             mock_redis.return_value = mock_client
@@ -98,7 +98,7 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_pipeline_xadd(self):
         """Test batch adding records with pipeline."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_pipeline = MagicMock()
             mock_pipeline.xadd = AsyncMock()
@@ -117,11 +117,11 @@ class TestRedisConnection:
     @pytest.mark.asyncio
     async def test_consumer_method(self):
         """Test creating a consumer."""
-        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+        with patch('streamengine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_redis.return_value = mock_client
 
-            with patch('streammachine.redisapi.GroupConsumer') as mock_group_consumer:
+            with patch('streamengine.redisapi.GroupConsumer') as mock_group_consumer:
                 mock_consumer = MagicMock()
                 # GroupConsumer() returns an awaitable that returns the consumer
                 # So we need to make the return_value a coroutine

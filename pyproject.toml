@@ -1,12 +1,12 @@
 [project]
-name = "streammachine"
+name = "streamengine"
 version = "0.1.0"
 description = "High-performance async stream processing with Redis Streams"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.8"
 authors = [
-    {name = "StreamMachine Team"}
+    {name = "StreamEngine Team"}
 ]
 keywords = ["streaming", "redis", "async", "event-driven", "data-processing"]
 classifiers = [
@@ -55,17 +55,17 @@ monitoring = [
     "prometheus-client>=0.17.0",
 ]
 all = [
-    "streammachine[dev,cython,fast-json,monitoring]",
+    "streamengine[dev,cython,fast-json,monitoring]",
 ]
 
 # [project.scripts]
-# streammachine = "streammachine.cli:main"
+# streamengine = "streamengine.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/anthropics/streammachine"
-Documentation = "https://github.com/anthropics/streammachine#readme"
-Repository = "https://github.com/anthropics/streammachine"
-Issues = "https://github.com/anthropics/streammachine/issues"
+Homepage = "https://github.com/anthropics/streamengine"
+Documentation = "https://github.com/anthropics/streamengine#readme"
+Repository = "https://github.com/anthropics/streamengine"
+Issues = "https://github.com/anthropics/streamengine/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -73,11 +73,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["streammachine*"]
+include = ["streamengine*"]
 exclude = ["tests*", "docs*"]
 
 [tool.setuptools.package-data]
-streammachine = ["py.typed"]
+streamengine = ["py.typed"]
 
 [tool.black]
 line-length = 100
@@ -148,7 +148,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["streammachine"]
+source = ["streamengine"]
 branch = true
 omit = ["tests/*", "*/__pycache__/*"]
 

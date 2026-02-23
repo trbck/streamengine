@@ -1,10 +1,10 @@
 """
-Tests for streammachine.storage module.
+Tests for streamengine.storage module.
 """
 import asyncio
 import pytest
 
-from streammachine.storage import Storage
+from streamengine.storage import Storage
 
 
 class TestStorage:
