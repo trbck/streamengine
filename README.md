@@ -16,42 +16,70 @@ StreamEngine is a high-performance, async-first Python framework for distributed
 ## File Structure
 ```
 streamengine/
-├── app.py                # Main application logic and event loop
-├── models.py             # Central dataclasses and data model utilities
-├── redisapi.py           # Async Redis connection and stream helpers
-├── storage.py            # Async, multiprocessing-safe in-memory storage
-├── util.py               # Decorators, registry, and async utilities
-├── tasks/                # (Empty) Place for CLI scripts (run_*.py)
-├── objstorage/
-│   ├── redisobjstore.py  # (Optional) Redis object storage helpers
-│   └── ...
-├── examples/
-│   └── example.py        # Example usage script
-├── tests/                # (Empty) Place for unittests
-├── config/               # (Empty) Place for config.yaml
-├── docs/                 # (Empty) Place for API docs
-├── __init__.py           # (Empty) Package marker
-├── LICENSE
-├── .gitignore
-├── .cursorrules
+├── src/streamengine/           # Main package
+│   ├── __init__.py             # Package exports
+│   ├── app.py                  # Main application logic and event loop
+│   ├── models.py               # Central dataclasses and data model utilities
+│   ├── redisapi.py             # Async Redis connection and stream helpers
+│   ├── storage.py              # Async, multiprocessing-safe in-memory storage
+│   ├── util.py                 # Decorators, registry, and async utilities
+│   ├── cython/                 # Cython acceleration
+│   │   ├── __init__.py
+│   │   ├── cython_decode.pyx   # Fast bytes-to-string decoding
+│   │   └── cython_decode.c     # Generated C code
+│   └── objstorage/             # Optional object storage
+│       ├── __init__.py
+│       └── redisobjstore.py    # Redis object storage with pickle
+├── examples/                   # Example scripts
+│   ├── basic_usage.py          # Basic usage example
+│   ├── batch_processing.py     # Batch message processing
+│   ├── benchmark_latency.py    # Latency benchmarking
+│   ├── benchmark_decode.py     # Decode performance benchmarking
+│   ├── health_check_example.py # Health check example
+│   ├── multiple_consumers.py   # Multiple consumer groups
+│   └── storage_example.py      # Shared storage example
+├── tests/                      # Test suite
+│   ├── conftest.py             # Pytest fixtures
+│   ├── test_app.py             # App tests
+│   ├── test_models.py          # Model tests
+│   ├── test_redisapi.py        # Redis API tests
+│   ├── test_storage.py         # Storage tests
+│   └── test_objstorage.py      # Object storage tests
+├── config/                     # Configuration files
+├── pyproject.toml              # Project configuration
+├── setup.py                    # Setup script
+├── plan.md                     # Development plan
+└── README.md                   # This file
 ```
 
 ## Quick Example
 ```python
-from app import App
+from streamengine import App, Message
 
-app = App()
+app = App(name="my_app")
 
 @app.timer(1)
-async def timer1():
+async def producer():
     await app.send("test_channel", {"test": 10})
 
 @app.agent("test_channel", concurrency=1, group="test")
-async def job1(record):
-    print("Received:", record)
+async def consumer(record: Message):
+    print("Received:", record.message)
 
 if __name__ == "__main__":
     app.start()
+```
+
+## Installation
+```bash
+pip install streamengine
+```
+
+Or install from source:
+```bash
+git clone https://github.com/anthropics/streamengine.git
+cd streamengine
+pip install -e .
 ```
 
 ## How It Works
@@ -64,7 +92,12 @@ if __name__ == "__main__":
 ## Requirements
 - Python 3.8+
 - Redis server (for Streams)
-- `coredis`, `uvloop`, `venusian`, `pandas`, `multiprocessing` (standard), `asyncio` (standard)
+- `coredis`, `uvloop`, `venusian`, `pandas`, `numpy`
+
+## Running Tests
+```bash
+pytest tests/
+```
 
 ## Contributing
 - Add new agents/timers via decorators.
@@ -74,4 +107,4 @@ if __name__ == "__main__":
 
 ---
 
-For more details, see the code and examples. PRs and issues welcome! 
+For more details, see the code and examples. PRs and issues welcome!
