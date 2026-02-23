@@ -11,8 +11,8 @@ import venusian
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Any, Callable, List, Optional, Set
 
-from util import Registry, AgentTaskDecorator, TimerTaskDecorator
-from models import (
+from .util import Registry, AgentTaskDecorator, TimerTaskDecorator
+from .models import (
     AppConfig,
     ConsumerConfig,
     TimerConfig,
@@ -20,8 +20,8 @@ from models import (
     Message,
     DEFAULT_CONSUMER_GROUP,
 )
-from redisapi import RedisConnection
-import storage
+from .redisapi import RedisConnection
+from . import storage
 
 # Configure logging
 logging.basicConfig(

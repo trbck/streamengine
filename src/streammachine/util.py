@@ -10,7 +10,7 @@ import time
 import inspect
 from typing import Any, Callable, Optional, Awaitable
 
-from models import ConsumerConfig, TimerConfig
+from .models import ConsumerConfig, TimerConfig
 
 #from .client import xack, xlen
 

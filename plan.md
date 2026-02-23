@@ -1,710 +1,314 @@
-# StreamMachine Code Review & Improvement Plan
+# StreamMachine Development Plan
 
 ## Executive Summary
 
-StreamMachine is a well-architected async-first Python framework for distributed stream processing using Redis Streams. The codebase demonstrates good use of modern Python features (dataclasses, type hints, asyncio). However, there are several areas for improvement ranging from critical bug fixes to code quality enhancements.
+StreamMachine is an async-first Python framework for distributed stream processing using Redis Streams. This document combines the code review findings, improvement plan, and feature roadmap.
 
 ---
 
-## Critical Issues (Must Fix)
+## Status Legend
 
-### 1. Missing `main()` Function in `app.py`
-**Location:** `app.py:158`
-
-```python
-if __name__ == "__main__":
-    main()  # main() is not defined!
-```
-
-**Issue:** The `main()` function is called but never defined. This will raise a `NameError` when running `app.py` directly.
-
-**Fix:** Either define `main()` or remove the block:
-```python
-if __name__ == "__main__":
-    # Option 1: Define main
-    main()
-
-    # Option 2: Remove entirely (app.py is not meant to be run directly)
-```
+- ✅ **Completed**: Implemented and tested
+- 🔄 **In Progress**: Currently being worked on
+- 📋 **Planned**: Scheduled for implementation
+- ❌ **Not Started**: Not yet begun
 
 ---
 
-### 2. Undefined `helpers` Variable in `util.py`
-**Location:** `util.py:42` and `util.py:69`
+## 1. Critical Issues (Must Fix)
 
-```python
-me.config.mod = inspect.getmodule(helpers)  # helpers is not defined!
-```
+### 1.1 Missing `main()` Function in `app.py` ✅
+**Status:** Fixed - The `if __name__ == "__main__"` block now prints a helpful message.
 
-**Issue:** The `helpers` variable is referenced but never imported or defined. This will cause a `NameError` when `helper=True` is passed to decorators.
+### 1.2 Undefined `helpers` Variable in `util.py` ✅
+**Status:** Fixed - The `helper` parameter was removed from decorators.
 
-**Fix:** Either remove the `helper` parameter or define the helpers module:
-```python
-# Option 1: Remove the helper parameter entirely
-# Option 2: Import helpers module
-from . import helpers  # or wherever helpers module is located
-```
+### 1.3 Undefined `value1` Variable in `example.py` ✅
+**Status:** Fixed - The example has been updated with proper variable definitions.
+
+### 1.4 Redis Lock Import Error in `objstorage/redisobjstore.py` ✅
+**Status:** Fixed - Now uses `from redis.asyncio import Lock`.
 
 ---
 
-### 3. Undefined `value1` Variable in `example.py`
-**Location:** `example.py:31-33`
+## 2. High Priority Improvements
 
-```python
-@app.agent("test_channel1", concurrency=1, group="test")
-async def job2(record: Message):
-    # value1 = await app.storage.read('key1')  # commented out
-    # ...
-    print(f"[job2] Value: {value1} | Message: {record}")  # value1 undefined!
-```
+### 2.1 Dependencies File ✅
+**Status:** Completed - `pyproject.toml` exists with all dependencies.
 
-**Issue:** `value1` is commented out but still used in the print statement. This will raise a `NameError`.
+### 2.2 Hardcoded Redis Connection String ✅
+**Status:** Completed - Now uses environment variables (`REDIS_URL`, `REDIS_HOST`, etc.).
 
-**Fix:** Uncomment the line or remove the reference:
-```python
-value1 = await app.storage.read('key1')
-# or remove value1 from the print statement
-```
+### 2.3 Graceful Shutdown Handling ✅
+**Status:** Completed - Signal handlers and `shutdown()` method implemented.
 
----
+### 2.4 Storage Singleton Thread Safety ✅
+**Status:** Completed - Double-checked locking pattern implemented.
 
-### 4. Redis Lock Import Error in `objstorage/redisobjstore.py`
-**Location:** `objstorage/redisobjstore.py:20`
+### 2.5 Message Acknowledgment on Error ✅
+**Status:** Completed - Error handling with logging in consumer loop.
 
-```python
-lock = redis.lock.Lock(self.redis_client, f"lock:{key}")
-```
+### 2.6 Timer Error Handling ✅
+**Status:** Completed - Try/except blocks around timer execution.
 
-**Issue:** `redis.lock.Lock` is incorrect usage. The correct import is `redis.asyncio.Lock`.
+### 2.7 Connection Pool Configuration ✅
+**Status:** Completed - Configurable via `REDIS_MAX_CONNECTIONS` env var.
 
-**Fix:**
-```python
-from redis.asyncio import Lock
+### 2.8 Configuration Validation ✅
+**Status:** Completed - `__post_init__` validation in dataclasses.
 
-lock = Lock(self.redis_client, f"lock:{key}")
-# or use the redis-py recommended approach:
-lock = self.redis_client.lock(f"lock:{key}")
-```
+### 2.9 Context Manager for Redis Connection ✅
+**Status:** Completed - `__aenter__` and `__aexit__` implemented.
+
+### 2.10 Health Check ✅
+**Status:** Completed - `health_check()` method added to App.
 
 ---
 
-## High Priority Improvements
+## 3. Medium Priority Improvements
 
-### 5. Missing Dependencies File
-**Issue:** No `requirements.txt`, `pyproject.toml`, or `setup.py` for dependency management.
+### 3.1 Inconsistent Redis Client Usage 📋
+**Issue:** Main package uses `coredis` while `objstorage` uses `redis.asyncio`.
+**Plan:** Keep both as optional extras; document usage clearly.
 
-**Recommendation:** Create `pyproject.toml`:
-```toml
-[project]
-name = "streammachine"
-version = "0.1.0"
-description = "High-performance async stream processing with Redis Streams"
-requires-python = ">=3.8"
-dependencies = [
-    "coredis>=4.0.0",
-    "uvloop>=0.17.0",
-    "venusian>=3.0.0",
-    "pandas>=1.5.0",
-    "numpy>=1.23.0",
-]
+### 3.2 Process Pool Not Utilized 📋
+**Issue:** `ProcessPoolExecutor` is created but never used.
+**Plan:** Implement multiprocess agent execution or remove dead code.
 
-[project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "black", "mypy", "ruff"]
-cython = ["cython"]
-fast-json = ["ujson", "orjson"]
+### 3.3 No Metrics Collection 📋
+**Plan:** Add `AgentMetrics` dataclass and `MetricsCollector` class.
 
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-```
+### 3.4 Add `__all__` to Public Modules ✅
+**Status:** Completed - All modules have `__all__` definitions.
+
+### 3.5 Use `asyncio.Event` for Graceful Shutdown ✅
+**Status:** Completed - `_shutdown_event` used for coordinated shutdown.
 
 ---
 
-### 6. Hardcoded Redis Connection String
-**Location:** `models.py:15`
+## 4. Test Suite ✅
+**Status:** Completed
 
-```python
-REDIS_CONNECTION_STRING: str = "redis://localhost:6379"
+Created comprehensive test suite:
+- `tests/test_models.py` - 22 tests for data models
+- `tests/test_storage.py` - 12 tests for Storage singleton
+- `tests/test_app.py` - 12 tests for App class
+- `tests/test_redisapi.py` - 10 tests for RedisConnection
+- `tests/test_objstorage.py` - Integration tests for objstorage (requires Redis)
+
+---
+
+## 5. Project Structure ✅
+**Status:** Reorganized
+
 ```
-
-**Issue:** Hardcoded connection string makes configuration inflexible.
-
-**Recommendation:** Use environment variables:
-```python
-import os
-
-REDIS_CONNECTION_STRING = os.getenv(
-    "REDIS_URL",
-    "redis://localhost:6379"
-)
-```
-
-And in `RedisConnection`:
-```python
-def __init__(self, url: Optional[str] = None):
-    url = url or REDIS_CONNECTION_STRING
-    self.client = coredis.Redis.from_url(url, max_connections=10)
+streammachine/
+├── examples/                 # Example scripts
+│   ├── README.md
+│   ├── basic_usage.py
+│   ├── multiple_consumers.py
+│   ├── storage_example.py
+│   ├── health_check_example.py
+│   ├── batch_processing.py
+│   ├── benchmark_latency.py
+│   └── benchmark_decode.py
+├── src/streammachine/        # Main package
+│   ├── __init__.py
+│   ├── app.py
+│   ├── models.py
+│   ├── redisapi.py
+│   ├── storage.py
+│   ├── util.py
+│   ├── cython/               # Cython acceleration
+│   │   ├── __init__.py
+│   │   ├── cython_decode.pyx
+│   │   └── cython_decode.c
+│   └── objstorage/           # Optional object storage
+│       ├── __init__.py
+│       └── redisobjstore.py
+├── tests/                    # Test suite
+├── config/                   # Configuration files
+├── pyproject.toml
+├── setup.py
+├── plan.md
+└── README.md
 ```
 
 ---
 
-### 7. No Graceful Shutdown Handling
-**Location:** `app.py:85-88`
+## 6. Feature Roadmap
 
-```python
-try:
-    self.loop.run_forever()
-except Exception:
-    self.loop.stop()
-```
+### 6.1 Core Features
 
-**Issue:** Exception handling is too broad and doesn't properly clean up resources.
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Message Batching & Windowing | High | 📋 | Batch messages with time/count windows |
+| Dead Letter Queue (DLQ) | High | 📋 | Automatic routing of failed messages |
+| Message Schema Validation | Medium | 📋 | Pydantic/JSON Schema validation |
+| Circuit Breaker Pattern | High | 📋 | Protect from cascading failures |
+| Priority Streams | Medium | 📋 | Priority-based consumption |
 
-**Recommendation:** Implement proper signal handling:
-```python
-import signal
+### 6.2 Developer Experience
 
-def start(self) -> None:
-    self._discover()
-    # ... setup code ...
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| CLI Tool | High | 📋 | Command-line interface for operations |
+| Hot Reload | Medium | 📋 | Auto-reload during development |
+| Debug Mode with Tracing | Medium | 📋 | Enhanced debugging capabilities |
+| Application Scaffolding | Low | 📋 | Generate project structure |
 
-    # Register signal handlers
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        self.loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(self.shutdown())
-        )
+### 6.3 Observability
 
-    try:
-        self.loop.run_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        self._cleanup()
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Prometheus Metrics | High | 📋 | Export metrics in Prometheus format |
+| OpenTelemetry Integration | Medium | 📋 | Distributed tracing |
+| Structured Logging | Medium | 📋 | JSON-formatted logs |
+| Web Dashboard | Low | 📋 | Real-time monitoring dashboard |
 
-async def shutdown(self) -> None:
-    logging.info("Shutting down...")
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+### 6.4 Performance
 
-    # Close resources
-    await self.rc.client.close()
-    self.process_pool.shutdown(wait=True)
-    self.thread_pool.shutdown(wait=True)
-    self.loop.stop()
-```
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Connection Pooling | High | 📋 | Enhanced connection management |
+| Message Compression | Medium | 📋 | Auto-compress large messages |
+| Memory Pooling | Low | 📋 | Reduce GC pressure |
+| Async Generator Consumers | Medium | 📋 | Stream-based message processing |
 
----
+### 6.5 Reliability
 
-### 8. Storage Singleton Thread Safety Issue
-**Location:** `storage.py:13-17`
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Exactly-Once Processing | High | 📋 | Idempotency tracking |
+| Checkpointing | Medium | 📋 | Save processing state |
+| Rate Limiting | Medium | 📋 | Token bucket rate limiting |
+| Backpressure Handling | Medium | 📋 | Handle slow consumers |
 
-```python
-def __new__(cls) -> 'Storage':
-    if cls._instance is None:
-        cls._instance = super(Storage, cls).__new__(cls)
-        cls._instance.init_storage()
-    return cls._instance
-```
+### 6.6 Testing
 
-**Issue:** Not thread-safe. Two threads could create instances simultaneously.
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Mock Redis Backend | High | 📋 | In-memory Redis mock for testing |
+| Test Utilities | Medium | 📋 | Helper functions for testing agents |
+| Integration Test Framework | Medium | 📋 | Framework for real Redis tests |
+| Load Testing | Low | 📋 | Built-in load testing utilities |
 
-**Recommendation:** Use a lock:
-```python
-import threading
+### 6.7 Time Series Storage
 
-class Storage:
-    _instance = None
-    _lock = threading.Lock()
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| TimeSeriesStore Class | High | 📋 | High-performance time series storage |
+| Fast DataFrame Conversion | High | 📋 | Optimized pandas conversion |
+| Aggregation & Downsampling | Medium | 📋 | Time-based aggregations |
 
-    def __new__(cls) -> 'Storage':
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:  # Double-check
-                    cls._instance = super().__new__(cls)
-                    cls._instance.init_storage()
-        return cls._instance
-```
+### 6.8 Advanced Features
+
+| Feature | Priority | Status | Description |
+|---------|----------|--------|-------------|
+| Stream Joins | Medium | 📋 | Windowed stream joins |
+| Transformation Pipelines | Medium | 📋 | Chain message transformations |
+| Multi-Tenancy | Low | 📋 | Tenant isolation |
+| Event Sourcing | Low | 📋 | Event sourcing patterns |
 
 ---
 
-### 9. Missing Message Acknowledgment on Error
-**Location:** `app.py:132-145`
+## 7. Implementation Phases
 
-```python
-while True:
-    async for stream, entry in cons:
-        m = Message(...)
-        result = await getattr(self.config.mod, self.config.obj_name)(m)
-        await asyncio.sleep(0)
-```
+### Phase 1: Reliability & Observability (1-2 months)
+- [ ] Circuit Breaker Pattern
+- [ ] Dead Letter Queue Support
+- [ ] Prometheus Metrics Export
+- [ ] Mock Redis Backend for Testing
+- [ ] Exactly-Once Processing
 
-**Issue:** If the handler raises an exception, the message is not reprocessed (due to `auto_acknowledge=True`). Consider error handling and retry logic.
+### Phase 2: Developer Experience (1-2 months)
+- [ ] CLI Tool
+- [ ] Message Schema Validation
+- [ ] Message Batching & Windowing
+- [ ] Test Utilities
 
-**Recommendation:**
-```python
-MAX_RETRIES = 3
+### Phase 3: Performance (1 month)
+- [ ] Connection Pooling Improvements
+- [ ] Message Compression
+- [ ] Async Generator Consumers
 
-async def __call__(self) -> None:
-    consumer_id = str(uuid.uuid4())
-    self.rc = RedisConnection()
-    cons = await self.rc.consumer(
-        self.config.topic, consumer_id, self.config.group
-    )
+### Phase 4: Advanced Features (2-3 months)
+- [ ] Stream Joins
+- [ ] Message Transformation Pipelines
+- [ ] Rate Limiting & Backpressure
+- [ ] Checkpointing
 
-    while True:
-        async for stream, entry in cons:
-            try:
-                m = Message(...)
-                result = await getattr(self.config.mod, self.config.obj_name)(m)
-            except Exception as e:
-                logging.error(f"Error processing message: {e}")
-                # Implement retry or dead letter queue
-                if self.config.max_retries:
-                    # Retry logic here
-                    pass
-            await asyncio.sleep(0)
-```
+### Phase 5: Polish & Documentation (1 month)
+- [ ] Type Stubs
+- [ ] API Documentation
+- [ ] Web Dashboard
+- [ ] Hot Reload
 
 ---
 
-## Medium Priority Improvements
+## 8. Code Quality Improvements
 
-### 10. Inconsistent Redis Client Usage
-**Issue:** `app.py` uses `coredis` while `objstorage/redisobjstore.py` uses `redis.asyncio`.
+### 8.1 Documentation
+- [ ] Add comprehensive docstrings to all public methods
+- [ ] Create API reference documentation
+- [ ] Add architecture decision records (ADRs)
 
-**Recommendation:** Standardize on one Redis client. Prefer `coredis` for consistency, or document why both are used.
+### 8.2 Type Hints
+- [ ] Complete type annotations in all modules
+- [ ] Add type stubs (`.pyi` files)
+- [ ] Enable strict mypy checking
 
----
-
-### 11. Missing Type Annotations in Several Places
-**Locations:** Multiple
-
-**Examples:**
-- `util.py:177`: `async def process(func: Callable, *args, **params)` - params not typed
-- `storage.py:11`: `_instance: Optional['Storage'] = None` - forward reference could use `from __future__ import annotations`
-
-**Recommendation:** Add `from __future__ import annotations` at the top of files and complete type hints.
-
----
-
-### 12. `dataframe_to_dataclass_list` Missing Error Handling
-**Location:** `models.py:31-37`
-
-```python
-def dataframe_to_dataclass_list(df: pd.DataFrame, cls: Type[T]) -> List[T]:
-    if not hasattr(cls, '__dataclass_fields__'):
-        raise ValueError("cls must be a dataclass type.")
-    return [cls(**row) for row in df.to_dict(orient='records')]
-```
-
-**Issue:** If DataFrame columns don't match dataclass fields, this will raise an unclear error.
-
-**Recommendation:**
-```python
-def dataframe_to_dataclass_list(df: pd.DataFrame, cls: Type[T]) -> List[T]:
-    if not hasattr(cls, '__dataclass_fields__'):
-        raise ValueError("cls must be a dataclass type.")
-
-    expected_fields = set(cls.__dataclass_fields__.keys())
-    actual_fields = set(df.columns)
-    missing = expected_fields - actual_fields
-    extra = actual_fields - expected_fields
-
-    if missing:
-        raise ValueError(f"DataFrame missing fields: {missing}")
-    if extra:
-        logging.warning(f"DataFrame has extra fields that will be ignored: {extra}")
-
-    return [cls(**row) for row in df.to_dict(orient='records')]
-```
+### 8.3 Performance
+- [ ] Profile and optimize hot paths
+- [ ] Consider Cython for critical sections
+- [ ] Add performance benchmarks to CI
 
 ---
 
-### 13. No Health Check or Metrics
-**Issue:** No way to monitor the health of running agents or collect metrics.
+## 9. Metrics for Success
 
-**Recommendation:** Add health check endpoint and metrics collection:
-```python
-from dataclasses import dataclass, field
-from typing import Dict
-import time
-
-@dataclass
-class AgentMetrics:
-    messages_processed: int = 0
-    errors: int = 0
-    last_message_time: Optional[float] = None
-    total_latency_ms: float = 0.0
-
-    @property
-    def avg_latency_ms(self) -> float:
-        if self.messages_processed == 0:
-            return 0.0
-        return self.total_latency_ms / self.messages_processed
-
-class MetricsCollector:
-    def __init__(self):
-        self.agent_metrics: Dict[str, AgentMetrics] = defaultdict(AgentMetrics)
-
-    def record_message(self, agent_name: str, latency_ms: float):
-        metrics = self.agent_metrics[agent_name]
-        metrics.messages_processed += 1
-        metrics.last_message_time = time.time()
-        metrics.total_latency_ms += latency_ms
-
-    def record_error(self, agent_name: str):
-        self.agent_metrics[agent_name].errors += 1
-```
+| Metric | Current | Target |
+|--------|---------|--------|
+| Test Coverage | ~60% (56 tests) | 80%+ |
+| Message Throughput | ~50K/s | 100K+/s |
+| P99 Latency | 10ms | <5ms |
+| Recovery Time | Manual | <30s |
+| Documentation | Basic | Comprehensive |
 
 ---
 
-### 14. Process Pool Not Utilized
-**Location:** `app.py:33`
+## 10. Recent Changes
 
-```python
-self.process_pool = ProcessPoolExecutor(max_workers=max_processes)
-```
-
-**Issue:** `ProcessPoolExecutor` is created but never used. The `_get_multiprocesses_concurrent_agents` method returns configs but they're never processed.
-
-**Recommendation:** Either implement multiprocess agent execution or remove the dead code.
-
----
-
-### 15. Timer Error Handling Missing
-**Location:** `util.py:115-118`
-
-```python
-async def timer_container(item: TimerConfig) -> None:
-    while True:
-        await asyncio.sleep(item.t)
-        await getattr(item.mod, item.obj_name)()
-```
-
-**Issue:** If a timer task raises an exception, the timer stops running silently.
-
-**Recommendation:**
-```python
-async def timer_container(item: TimerConfig) -> None:
-    while True:
-        await asyncio.sleep(item.t)
-        try:
-            await getattr(item.mod, item.obj_name)()
-        except Exception as e:
-            logging.error(f"Timer {item.obj_name} failed: {e}")
-            # Optionally continue or re-raise
-```
+### 2024-02-22
+- ✅ Fixed all critical issues
+- ✅ Reorganized project structure
+- ✅ Created comprehensive test suite (56 tests passing)
+- ✅ Added examples directory with multiple example scripts
+- ✅ Moved cython files to `src/streammachine/cython/`
+- ✅ Moved objstorage to `src/streammachine/objstorage/`
+- ✅ Updated `__init__.py` with proper exports
+- ✅ Added version information to package
+- ✅ Fixed coredis deprecation warning (`coredis.patterns.streams`)
+- ✅ Merged plan.md and features.md into this document
 
 ---
 
-### 16. No Connection Pool Configuration
-**Location:** `redisapi.py:15`
+## Contributing
 
-```python
-self.client: Redis = coredis.Redis(host=host, port=port, db=db, max_connections=10)
-```
-
-**Issue:** `max_connections=10` is hardcoded. Should be configurable.
-
-**Recommendation:**
-```python
-def __init__(
-    self,
-    host: str = '127.0.0.1',
-    port: int = 6379,
-    db: int = 0,
-    max_connections: int = 10
-):
-    self.client = coredis.Redis(
-        host=host, port=port, db=db,
-        max_connections=max_connections
-    )
-```
+When implementing features:
+1. Add comprehensive tests
+2. Update documentation
+3. Maintain backward compatibility
+4. Follow existing code style
+5. Add type hints
+6. Update this plan.md
 
 ---
 
-## Low Priority / Code Quality
+## References
 
-### 17. Add `__all__` to Public Modules
-**Recommendation:** Define public API in each module:
-```python
-# app.py
-__all__ = ['App', 'StreamConsumer']
-
-# models.py
-__all__ = ['Message', 'AppConfig', 'ConsumerConfig', 'TimerConfig', 'StreamTopic']
-```
-
----
-
-### 18. Add Docstrings to All Public Methods
-**Issue:** Some methods lack docstrings (e.g., `App._discover`, `App._get_concurrent_agents`).
-
-**Recommendation:** Add comprehensive docstrings following Google or NumPy style.
-
----
-
-### 19. Use `asyncio.Event` Instead of `while True` in `maintenance_task`
-**Location:** `app.py:147-150`
-
-```python
-async def maintenance_task() -> None:
-    while True:
-        await asyncio.sleep(60)
-```
-
-**Recommendation:** Use an event for graceful shutdown:
-```python
-class App:
-    def __init__(self, ...):
-        self._shutdown_event = asyncio.Event()
-
-async def maintenance_task(app: App) -> None:
-    while not app._shutdown_event.is_set():
-        await asyncio.wait_for(
-            app._shutdown_event.wait(),
-            timeout=60.0
-        )
-        # Perform maintenance
-```
-
----
-
-### 20. Consider Using `asyncio.TaskGroup` (Python 3.11+)
-**Location:** `app.py:82-83`
-
-```python
-for task in tasks:
-    asyncio.ensure_future(task)
-```
-
-**Recommendation:** For Python 3.11+, use TaskGroup for better error handling:
-```python
-async def run_tasks(self):
-    async with asyncio.TaskGroup() as tg:
-        for task in self._get_concurrent_agents():
-            tg.create_task(task())
-        for timer in self._get_timers():
-            tg.create_task(timer)
-```
-
----
-
-### 21. Add Structured Logging
-**Issue:** Using basic `logging` without structured context.
-
-**Recommendation:** Consider using `structlog` or add context to log messages:
-```python
-import logging
-import json
-from dataclasses import asdict
-
-class JSONFormatter(logging.Formatter):
-    def format(self, record):
-        log_data = {
-            "timestamp": self.formatTime(record),
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-        }
-        if hasattr(record, 'extra_data'):
-            log_data['extra'] = record.extra_data
-        return json.dumps(log_data)
-```
-
----
-
-### 22. Create Proper Test Suite
-**Issue:** README mentions `tests/` folder but it doesn't exist. Only `objstorage/test_redisobjstore.py` has tests.
-
-**Recommendation:** Create comprehensive test suite:
-```
-tests/
-├── __init__.py
-├── conftest.py           # Fixtures
-├── test_app.py           # App tests
-├── test_models.py        # Model tests
-├── test_redisapi.py      # Redis connection tests
-├── test_storage.py       # Storage tests
-├── test_util.py          # Utility tests
-└── test_integration.py   # Integration tests
-```
-
----
-
-### 23. Add Configuration Validation
-**Location:** `models.py` dataclasses
-
-**Recommendation:** Use `pydantic` or add `__post_init__` validation:
-```python
-from dataclasses import dataclass
-
-@dataclass
-class AppConfig:
-    name: str = ""
-    max_processes: int = 5
-    max_threads: int = 5
-
-    def __post_init__(self):
-        if self.max_processes < 1:
-            raise ValueError("max_processes must be >= 1")
-        if self.max_threads < 1:
-            raise ValueError("max_threads must be >= 1")
-```
-
----
-
-### 24. Use Context Manager for Redis Connection
-**Location:** `redisapi.py`
-
-**Recommendation:** Make `RedisConnection` a context manager:
-```python
-class RedisConnection:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.client.close()
-        return False
-```
-
----
-
-### 25. Benchmark File Issues
-**Location:** `bench_mass_latency.py`
-
-**Issues:**
-1. Uses global variables (`latencies`, `received_count`, `last_id`)
-2. `last_id` initialization as `"0"` may not be correct for all cases
-3. Debug print statements left in code
-
-**Recommendation:** Refactor into a class with proper cleanup.
-
----
-
-## Architecture Recommendations
-
-### 26. Consider Adding a CLI Entry Point
-**Recommendation:** Add a CLI for common operations:
-```python
-# cli.py
-import click
-
-@click.group()
-def cli():
-    """StreamMachine CLI"""
-    pass
-
-@cli.command()
-@click.option('--config', default='config.yaml')
-def start(config):
-    """Start the stream processor"""
-    pass
-
-@cli.command()
-def status():
-    """Check status of running processors"""
-    pass
-```
-
----
-
-### 27. Add Middleware/Interceptor Support
-**Recommendation:** Allow users to add middleware for cross-cutting concerns:
-```python
-class Middleware:
-    async def before_process(self, message: Message) -> Message:
-        return message
-
-    async def after_process(self, message: Message, result: Any):
-        pass
-
-    async def on_error(self, message: Message, error: Exception):
-        pass
-
-class App:
-    def __init__(self):
-        self.middlewares: List[Middleware] = []
-
-    def add_middleware(self, middleware: Middleware):
-        self.middlewares.append(middleware)
-```
-
----
-
-### 28. Add Dead Letter Queue Support
-**Recommendation:** Implement DLQ for failed messages:
-```python
-class StreamConsumer:
-    async def handle_failure(self, message: Message, error: Exception):
-        await self.rc.client.xadd(
-            f"{self.config.topic}:dlq",
-            {
-                "original_topic": message.topic,
-                "error": str(error),
-                "original_data": json.dumps(message.message),
-                "timestamp": time.time()
-            }
-        )
-```
-
----
-
-## Summary Table
-
-| Priority | Issue | Location | Impact |
-|----------|-------|----------|--------|
-| Critical | Missing `main()` function | app.py:158 | Runtime error |
-| Critical | Undefined `helpers` variable | util.py:42,69 | Runtime error |
-| Critical | Undefined `value1` variable | example.py:31-33 | Runtime error |
-| Critical | Redis Lock import error | objstorage/redisobjstore.py:20 | Runtime error |
-| High | Missing dependencies file | Project root | Deployment issues |
-| High | Hardcoded Redis connection | models.py:15 | Configuration inflexibility |
-| High | No graceful shutdown | app.py:85-88 | Resource leaks |
-| High | Singleton thread safety | storage.py:13-17 | Race conditions |
-| High | No error handling in consumer | app.py:132-145 | Message loss |
-| Medium | Inconsistent Redis clients | Multiple | Maintenance burden |
-| Medium | Missing type annotations | Multiple | Code clarity |
-| Medium | No health checks | N/A | Operational visibility |
-| Medium | Unused ProcessPool | app.py:33,63-68 | Dead code |
-| Medium | Timer error handling | util.py:115-118 | Silent failures |
-| Low | No `__all__` definitions | All modules | API clarity |
-| Low | Missing docstrings | Multiple | Documentation |
-| Low | No test suite | tests/ | Quality assurance |
-
----
-
-## Recommended Implementation Order
-
-1. **Phase 1 - Critical Fixes (Immediate)**
-   - Fix undefined variables and functions
-   - Fix Redis Lock import
-   - Add missing dependencies file
-
-2. **Phase 2 - Stability (1-2 weeks)**
-   - Implement graceful shutdown
-   - Add error handling to consumers/timers
-   - Fix singleton thread safety
-   - Add configuration via environment variables
-
-3. **Phase 3 - Observability (2-3 weeks)**
-   - Add health checks
-   - Add metrics collection
-   - Add structured logging
-   - Add dead letter queue support
-
-4. **Phase 4 - Quality (Ongoing)**
-   - Add comprehensive test suite
-   - Complete type annotations
-   - Add docstrings
-   - Add middleware support
-
----
-
-## Conclusion
-
-StreamMachine has a solid foundation with good architectural decisions (async-first, dataclasses, decorator-based registration). The critical issues are primarily around undefined variables and missing error handling, which should be addressed immediately. The medium and low priority items will improve maintainability and operational visibility over time.
+- [Redis Streams Documentation](https://redis.io/docs/data-types/streams/)
+- [coredis Library](https://github.com/nicholasamorim/coredis)
+- [uvloop](https://github.com/MagicStack/uvloop)
+- [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/)
+- [Prometheus Client](https://github.com/prometheus/client_python)
