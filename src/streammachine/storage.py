@@ -94,6 +94,19 @@ class Storage:
         await asyncio.to_thread(self.command_queue.put, ("terminate", [], {}))
         logger.debug("Storage termination signal sent")
 
+    def stop(self) -> None:
+        """
+        Stop the storage manager and clean up resources.
+
+        This shuts down the multiprocessing manager, which terminates
+        the background process and releases all shared resources.
+        """
+        try:
+            self.manager.shutdown()
+            logger.debug("Storage manager shut down")
+        except Exception as e:
+            logger.warning(f"Error shutting down storage manager: {e}")
+
     async def write(self, key: str, value: Any) -> None:
         """
         Asynchronously write a key-value pair to the shared dictionary.

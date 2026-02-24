@@ -196,6 +196,12 @@ class App:
         """Clean up resources after event loop stops."""
         logger.info("Cleaning up resources...")
 
+        # Shutdown storage manager (multiprocessing.Manager creates a separate process)
+        try:
+            self.storage.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping storage: {e}")
+
         # Shutdown executors
         try:
             self.process_pool.shutdown(wait=False)
@@ -274,6 +280,13 @@ class App:
             logger.debug("Redis connection closed")
         except Exception as e:
             logger.warning(f"Error closing Redis connection: {e}")
+
+        # Terminate storage command handler
+        try:
+            await self.storage.terminate()
+            logger.debug("Storage termination signal sent")
+        except Exception as e:
+            logger.warning(f"Error terminating storage: {e}")
 
         # Stop the event loop
         if self.loop:
