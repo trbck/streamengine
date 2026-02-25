@@ -4,6 +4,7 @@ Tests for streammachine.redisapi module.
 Note: These tests mock Redis connections to avoid requiring a running Redis server.
 For integration tests with real Redis, use the integration test markers.
 """
+import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -105,8 +106,10 @@ class TestRedisConnection:
         with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
             mock_client = MagicMock()
             mock_pipeline = MagicMock()
-            mock_pipeline.xadd = AsyncMock()
-            mock_pipeline.execute = AsyncMock(return_value=["id1", "id2"])
+            # Pipeline commands are queued (not awaited); execution happens
+            # on __aexit__, results available via pipe.results property
+            mock_pipeline.xadd = MagicMock()
+            mock_pipeline.results = ("id1", "id2")
             mock_pipeline.__aenter__ = AsyncMock(return_value=mock_pipeline)
             mock_pipeline.__aexit__ = AsyncMock(return_value=None)
             mock_client.pipeline = MagicMock(return_value=mock_pipeline)
@@ -117,6 +120,7 @@ class TestRedisConnection:
             result = await conn.pipeline_xadd("test_topic", records)
 
             assert result == ["id1", "id2"]
+            assert mock_pipeline.xadd.call_count == 2
 
     @pytest.mark.asyncio
     async def test_consumer_method(self):
@@ -137,3 +141,48 @@ class TestRedisConnection:
                 )
                 assert consumer is mock_consumer
                 mock_group_consumer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ensure_pool_concurrent_calls(self):
+        """Test that concurrent _ensure_pool calls only enter pool once."""
+        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+            mock_pool = MagicMock()
+            mock_pool.__aenter__ = AsyncMock(return_value=mock_pool)
+            mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+            mock_client = MagicMock()
+            mock_client.connection_pool = mock_pool
+            mock_redis.return_value = mock_client
+
+            conn = RedisConnection()
+
+            # Launch multiple concurrent _ensure_pool calls
+            await asyncio.gather(
+                conn._ensure_pool(),
+                conn._ensure_pool(),
+                conn._ensure_pool(),
+                conn._ensure_pool(),
+                conn._ensure_pool(),
+            )
+
+            # Pool __aenter__ must have been called exactly once
+            mock_pool.__aenter__.assert_called_once()
+            assert conn._pool_entered is True
+
+    @pytest.mark.asyncio
+    async def test_ensure_pool_idempotent(self):
+        """Test that _ensure_pool is a no-op after first call."""
+        with patch('streammachine.redisapi.coredis.Redis') as mock_redis:
+            mock_pool = MagicMock()
+            mock_pool.__aenter__ = AsyncMock(return_value=mock_pool)
+
+            mock_client = MagicMock()
+            mock_client.connection_pool = mock_pool
+            mock_redis.return_value = mock_client
+
+            conn = RedisConnection()
+            await conn._ensure_pool()
+            await conn._ensure_pool()
+            await conn._ensure_pool()
+
+            mock_pool.__aenter__.assert_called_once()

@@ -64,6 +64,7 @@ class RedisConnection:
         self._use_url = url is not None
         self._client: Optional[Redis[bytes]] = None
         self._pool_entered: bool = False
+        self._pool_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def client(self) -> Redis[bytes]:
@@ -88,10 +89,16 @@ class RedisConnection:
 
         coredis 6.x requires the ConnectionPool to be entered as an async
         context manager before use — this is where _task_group is created.
+
+        Uses an asyncio.Lock to prevent concurrent first-use calls from
+        double-entering the pool.
         """
-        if not self._pool_entered:
-            await self.client.connection_pool.__aenter__()
-            self._pool_entered = True
+        if self._pool_entered:
+            return
+        async with self._pool_lock:
+            if not self._pool_entered:
+                await self.client.connection_pool.__aenter__()
+                self._pool_entered = True
 
     async def __aenter__(self) -> "RedisConnection":
         """Async context manager entry — initializes the connection pool."""
@@ -160,6 +167,10 @@ class RedisConnection:
         """
         Batch add multiple records to a Redis stream using pipeline for speed.
 
+        In coredis, pipeline commands are queued without await. The pipeline
+        executes automatically when the async-with block exits, and results
+        are available via pipe.results.
+
         Args:
             topic: Stream name
             records: List of record dictionaries to add
@@ -170,8 +181,8 @@ class RedisConnection:
         await self._ensure_pool()
         async with self.client.pipeline() as pipe:
             for record in records:
-                await pipe.xadd(topic, record)
-            return await pipe.execute()
+                pipe.xadd(topic, record)
+        return list(pipe.results) if pipe.results else []
 
     async def health_check(self) -> bool:
         """

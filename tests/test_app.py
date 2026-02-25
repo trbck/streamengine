@@ -1,10 +1,11 @@
 """
 Tests for streammachine.app module.
 """
+import asyncio
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
-from streammachine.app import App, agent_container, timer_container
+from streammachine.app import App, StreamConsumer, agent_container, timer_container
 from streammachine.models import ConsumerConfig, TimerConfig
 
 
@@ -149,3 +150,69 @@ class TestAppShutdown:
         app = App(to_scan=False)
         assert hasattr(app, '_shutdown_event')
         assert app._shutdown_event is not None
+
+
+class TestStreamConsumerRepoll:
+    """Tests for StreamConsumer while-True repoll loop."""
+
+    @pytest.mark.asyncio
+    async def test_consumer_retries_after_empty_iterator(self):
+        """Test that consumer loop continues after iterator exhaustion."""
+        mock_module = MagicMock()
+        handler_calls = []
+
+        async def mock_handler(msg):
+            handler_calls.append(msg)
+
+        mock_module.test_handler = mock_handler
+
+        config = ConsumerConfig(
+            decorator_type="agent",
+            topic="test_topic",
+            group="test_group",
+            obj_name="test_handler",
+            mod=mock_module,
+        )
+
+        consumer = StreamConsumer(config)
+
+        # Track how many times the GroupConsumer iterator is entered
+        iteration_count = 0
+
+        class MockGroupConsumer:
+            """Mock that yields nothing on first iteration, one item on second, then cancels."""
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                nonlocal iteration_count
+                iteration_count += 1
+                if iteration_count == 1:
+                    # First iteration: empty (simulates timeout with no messages)
+                    raise StopAsyncIteration
+                elif iteration_count == 2:
+                    # Second iteration: one message then stop
+                    iteration_count += 1  # skip to 3 so next call stops
+                    mock_entry = MagicMock()
+                    mock_entry.identifier = b"1-0"
+                    mock_entry.field_values = {b"key": b"val"}
+                    return (b"test_topic", mock_entry)
+                else:
+                    # Cancel the task to exit the while-True loop
+                    raise asyncio.CancelledError()
+
+        mock_rc = MagicMock()
+        mock_rc.consumer = AsyncMock(return_value=MockGroupConsumer())
+        mock_rc.close = AsyncMock()
+
+        with patch.object(consumer, '_rc', mock_rc):
+            consumer._rc = mock_rc
+            # Patch RedisConnection creation in __call__
+            with patch('streammachine.app.RedisConnection', return_value=mock_rc):
+                # Run the consumer — it should survive the first empty iteration,
+                # process one message, then get cancelled
+                await consumer()
+
+        # Handler was called once (on the second iteration)
+        assert len(handler_calls) == 1

@@ -110,6 +110,8 @@ class Storage:
 
     async def terminate(self) -> None:
         """Terminate the command handler process."""
+        if not self._manager_started:
+            return
         await asyncio.to_thread(self.command_queue.put, ("terminate", [], {}))
         logger.debug("Storage termination signal sent")
 
@@ -138,6 +140,7 @@ class Storage:
             key: The key to write
             value: The value to store
         """
+        self._ensure_manager()
         lock = self._get_lock(key)
         async with lock:
             self.shared_dict[key] = value
@@ -154,6 +157,7 @@ class Storage:
         Returns:
             The stored value or default
         """
+        self._ensure_manager()
         if self.lock_reading:
             lock = self._get_lock(key)
             async with lock:
@@ -170,6 +174,7 @@ class Storage:
         Returns:
             True if key was deleted, False if key didn't exist
         """
+        self._ensure_manager()
         lock = self._get_lock(key)
         async with lock:
             if key in self.shared_dict:
@@ -188,6 +193,7 @@ class Storage:
         Returns:
             True if key exists, False otherwise
         """
+        self._ensure_manager()
         return key in self.shared_dict
 
     async def keys(self) -> list:
@@ -197,10 +203,12 @@ class Storage:
         Returns:
             List of keys
         """
+        self._ensure_manager()
         return list(self.shared_dict.keys())
 
     async def clear(self) -> None:
         """Clear all keys from the shared dictionary."""
+        self._ensure_manager()
         self.shared_dict.clear()
         with self._locks_lock:
             self._key_locks.clear()

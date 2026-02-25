@@ -103,3 +103,68 @@ class TestStorage:
         await storage.write("complex", complex_value)
         result = await storage.read("complex")
         assert result == complex_value
+
+
+class TestStorageLazyInit:
+    """Tests for Storage lazy manager initialization."""
+
+    @pytest.mark.asyncio
+    async def test_write_before_start_auto_inits(self):
+        """Test that write() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        # Manager not started — write should lazily start it
+        await s.write("auto_key", "auto_value")
+        result = await s.read("auto_key")
+        assert result == "auto_value"
+        assert s._manager_started is True
+        Storage.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_read_before_start_auto_inits(self):
+        """Test that read() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        result = await s.read("missing", default="fallback")
+        assert result == "fallback"
+        assert s._manager_started is True
+        Storage.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_keys_before_start_auto_inits(self):
+        """Test that keys() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        result = await s.keys()
+        assert result == []
+        assert s._manager_started is True
+        Storage.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_exists_before_start_auto_inits(self):
+        """Test that exists() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        result = await s.exists("nope")
+        assert result is False
+        assert s._manager_started is True
+        Storage.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_delete_before_start_auto_inits(self):
+        """Test that delete() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        result = await s.delete("nope")
+        assert result is False
+        assert s._manager_started is True
+        Storage.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_clear_before_start_auto_inits(self):
+        """Test that clear() auto-initializes manager if not started."""
+        Storage.reset_instance()
+        s = Storage()
+        await s.clear()
+        assert s._manager_started is True
+        Storage.reset_instance()
