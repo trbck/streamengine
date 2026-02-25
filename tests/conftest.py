@@ -26,6 +26,7 @@ def storage():
     # Reset singleton before each test
     Storage.reset_instance()
     s = Storage()
+    s._ensure_manager()
     yield s
     # Cleanup after test
     Storage.reset_instance()

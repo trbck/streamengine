@@ -30,6 +30,8 @@ class TestRedisConnection:
                 db=1,
                 max_connections=20,
             )
+            # Access client to trigger lazy creation
+            _ = conn.client
             # Verify Redis was called with correct params
             mock_redis.assert_called_once()
             call_kwargs = mock_redis.call_args[1]
@@ -55,6 +57,8 @@ class TestRedisConnection:
             mock_redis.return_value = mock_client
 
             conn = RedisConnection()
+            # Access client to trigger lazy creation before closing
+            _ = conn.client
             await conn.close()
             mock_client.quit.assert_called_once()
 
@@ -123,12 +127,7 @@ class TestRedisConnection:
 
             with patch('streammachine.redisapi.GroupConsumer') as mock_group_consumer:
                 mock_consumer = MagicMock()
-                # GroupConsumer() returns an awaitable that returns the consumer
-                # So we need to make the return_value a coroutine
-                async def make_consumer(*args, **kwargs):
-                    return mock_consumer
-                # When GroupConsumer is called, it returns a coroutine
-                mock_group_consumer.side_effect = lambda *args, **kwargs: make_consumer(*args, **kwargs)
+                mock_group_consumer.return_value = mock_consumer
 
                 conn = RedisConnection()
                 consumer = await conn.consumer(
@@ -136,4 +135,5 @@ class TestRedisConnection:
                     consumer="consumer1",
                     group="group1",
                 )
-                assert consumer is not None
+                assert consumer is mock_consumer
+                mock_group_consumer.assert_called_once()

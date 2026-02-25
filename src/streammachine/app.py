@@ -228,6 +228,7 @@ class App:
         """
         t = time.time()
         record["sent"] = t
+        await self.rc._ensure_pool()
         return await self.rc.client.xadd(topic, record)
 
     async def send_batch(self, topic: str, records: List[dict]) -> List:
@@ -388,16 +389,22 @@ class StreamConsumer:
                 group
             )
 
-            async for stream, entry in cons:
-                try:
-                    await self._process_message(stream, entry, consumer_id)
-                except Exception as e:
-                    logger.error(
-                        f"Error processing message from {stream}: {e}",
-                        exc_info=True
-                    )
-                    # Continue processing next messages
-                await asyncio.sleep(0)  # Yield to event loop
+            # The GroupConsumer async iterator raises StopAsyncIteration
+            # when xreadgroup returns no messages after the block timeout.
+            # We wrap in a while-True to keep polling for new messages.
+            while True:
+                async for stream, entry in cons:
+                    try:
+                        await self._process_message(stream, entry, consumer_id)
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing message from {stream}: {e}",
+                            exc_info=True
+                        )
+                        # Continue processing next messages
+                    await asyncio.sleep(0)  # Yield to event loop
+                # Iterator exhausted (timeout with no messages) — retry
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             logger.info(f"Consumer {consumer_id} cancelled")
         except Exception as e:

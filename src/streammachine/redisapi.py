@@ -46,6 +46,9 @@ class RedisConnection:
         """
         Initialize Redis connection.
 
+        Client creation is deferred until first use to avoid issues with
+        coredis 6.x ConnectionPool requiring an async context (anyio task group).
+
         Args:
             host: Redis host (default from REDIS_HOST env var)
             port: Redis port (default from REDIS_PORT env var)
@@ -58,23 +61,41 @@ class RedisConnection:
         self._port = port or REDIS_PORT
         self._db = db if db is not None else REDIS_DB
         self._max_connections = max_connections or REDIS_MAX_CONNECTIONS
+        self._use_url = url is not None
+        self._client: Optional[Redis[bytes]] = None
+        self._pool_entered: bool = False
 
-        if url:
-            # Parse URL and create client from it
-            self.client: Redis[bytes] = coredis.Redis.from_url(
-                url,
-                max_connections=self._max_connections
-            )
-        else:
-            self.client: Redis[bytes] = coredis.Redis(
-                host=self._host,
-                port=self._port,
-                db=self._db,
-                max_connections=self._max_connections
-            )
+    @property
+    def client(self) -> Redis[bytes]:
+        """Lazily create the Redis client on first access."""
+        if self._client is None:
+            if self._use_url:
+                self._client = coredis.Redis.from_url(
+                    self._url,
+                    max_connections=self._max_connections
+                )
+            else:
+                self._client = coredis.Redis(
+                    host=self._host,
+                    port=self._port,
+                    db=self._db,
+                    max_connections=self._max_connections
+                )
+        return self._client
+
+    async def _ensure_pool(self) -> None:
+        """Enter the connection pool async context if not already entered.
+
+        coredis 6.x requires the ConnectionPool to be entered as an async
+        context manager before use — this is where _task_group is created.
+        """
+        if not self._pool_entered:
+            await self.client.connection_pool.__aenter__()
+            self._pool_entered = True
 
     async def __aenter__(self) -> "RedisConnection":
-        """Async context manager entry."""
+        """Async context manager entry — initializes the connection pool."""
+        await self._ensure_pool()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
@@ -84,7 +105,12 @@ class RedisConnection:
 
     async def close(self) -> None:
         """Close the Redis connection pool."""
+        if self._client is None:
+            return
         try:
+            if self._pool_entered:
+                await self.client.connection_pool.__aexit__(None, None, None)
+                self._pool_entered = False
             await self.client.quit()
             logger.debug("Redis connection closed")
         except Exception as e:
@@ -99,6 +125,7 @@ class RedisConnection:
         group: str,
         start_from_backlog: bool = False,
         auto_acknowledge: bool = True,
+        timeout: int = 5000,
     ) -> GroupConsumer:
         """
         Create a Redis stream group consumer for the given channels.
@@ -109,19 +136,24 @@ class RedisConnection:
             group: Consumer group name
             start_from_backlog: Whether to start from pending messages
             auto_acknowledge: Whether to auto-ack messages after processing
+            timeout: Block timeout in milliseconds when waiting for new
+                messages. Without this, xreadgroup returns immediately if
+                no messages are available and the consumer loop exits.
 
         Returns:
             GroupConsumer instance for iterating over messages
         """
+        await self._ensure_pool()
         if isinstance(channel, str):
             channel = [channel]
-        return await GroupConsumer(
+        return GroupConsumer(
             self.client,
             streams=channel,
             group=group,
             consumer=consumer,
             auto_acknowledge=auto_acknowledge,
-            start_from_backlog=start_from_backlog
+            start_from_backlog=start_from_backlog,
+            timeout=timeout,
         )
 
     async def pipeline_xadd(self, topic: str, records: List[dict]) -> List:
@@ -135,6 +167,7 @@ class RedisConnection:
         Returns:
             List of message IDs from the XADD commands
         """
+        await self._ensure_pool()
         async with self.client.pipeline() as pipe:
             for record in records:
                 await pipe.xadd(topic, record)
@@ -148,6 +181,7 @@ class RedisConnection:
             True if connection is healthy, False otherwise
         """
         try:
+            await self._ensure_pool()
             await self.client.ping()
             return True
         except Exception as e:

@@ -43,19 +43,34 @@ class Storage:
         return cls._instance
 
     def _init_storage(self) -> None:
-        """Initialize the storage attributes."""
+        """Initialize the storage attributes (without multiprocessing.Manager)."""
         if self._initialized:
             return
 
-        self.manager = multiprocessing.Manager()
-        self.shared_dict: Dict[str, Any] = self.manager.dict()
-        self.command_queue = self.manager.Queue()
+        self.manager = None
+        self.shared_dict: Optional[Dict[str, Any]] = None
+        self.command_queue = None
         # Dictionary of locks, one for each key (write lock only)
         self._key_locks: Dict[str, asyncio.Lock] = {}
         self._locks_lock = threading.Lock()  # Protect _key_locks access
         self.lock_reading = False  # By default, don't lock during reading
+        self._manager_started = False
         self._initialized = True
-        logger.debug("Storage initialized")
+        logger.debug("Storage initialized (manager deferred)")
+
+    def _ensure_manager(self) -> None:
+        """Start multiprocessing.Manager if not already started.
+
+        This is deferred from __init__ to avoid issues with macOS spawn
+        multiprocessing when App is created at module level.
+        """
+        if self._manager_started:
+            return
+        self.manager = multiprocessing.Manager()
+        self.shared_dict = self.manager.dict()
+        self.command_queue = self.manager.Queue()
+        self._manager_started = True
+        logger.debug("Storage manager started")
 
     def _get_lock(self, key: str) -> asyncio.Lock:
         """
@@ -73,7 +88,10 @@ class Storage:
             return self._key_locks[key]
 
     def handle_commands(self) -> None:
-        """Listen and handle incoming commands (blocking, for background process)."""
+        """Listen and handle incoming commands (blocking, for background process).
+
+        Requires manager to be started via start().
+        """
         logger.debug("Command handler started")
         while True:
             try:
@@ -85,7 +103,8 @@ class Storage:
                 logger.error(f"Error in command handler: {e}")
 
     async def start(self) -> None:
-        """Start listening for commands asynchronously (in executor)."""
+        """Start the manager and listen for commands asynchronously (in executor)."""
+        self._ensure_manager()
         loop = asyncio.get_event_loop()
         self.command_handler = await loop.run_in_executor(None, self.handle_commands)
 
@@ -101,6 +120,8 @@ class Storage:
         This shuts down the multiprocessing manager, which terminates
         the background process and releases all shared resources.
         """
+        if not self._manager_started:
+            return
         try:
             self.manager.shutdown()
             logger.debug("Storage manager shut down")
@@ -195,10 +216,11 @@ class Storage:
         """
         with cls._lock:
             if cls._instance is not None:
-                try:
-                    cls._instance.manager.shutdown()
-                except Exception as e:
-                    logger.warning(f"Error shutting down manager: {e}")
+                if cls._instance._manager_started:
+                    try:
+                        cls._instance.manager.shutdown()
+                    except Exception as e:
+                        logger.warning(f"Error shutting down manager: {e}")
                 cls._instance = None
                 cls._initialized = False
                 logger.debug("Storage instance reset")
