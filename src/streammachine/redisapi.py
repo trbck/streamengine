@@ -49,7 +49,7 @@ from typing import Any, List, Optional
 
 import coredis
 from coredis import Redis
-from coredis.patterns.streams import GroupConsumer
+from coredis.stream import GroupConsumer
 
 from .models import (
     REDIS_HOST,
