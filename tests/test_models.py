@@ -13,6 +13,10 @@ from streammachine.models import (
     StreamTopic,
     dataclass_list_to_dataframe,
     dataframe_to_dataclass_list,
+    streams_to_dataframe,
+    streams_to_dataframe_fast,
+    prune_old_dataframe_rows,
+    TimeSeriesBuffer,
 )
 
 
@@ -249,3 +253,295 @@ class TestDataclassConversions:
         configs = dataframe_to_dataclass_list(df, ConsumerConfig)
         assert len(configs) == 1
         assert "extra fields" in caplog.text
+
+
+class TestStreamsToDataFrame:
+    """Tests for Redis streams to DataFrame conversion."""
+
+    @pytest.fixture
+    def sample_stream_output(self):
+        """Create sample Redis stream output for testing."""
+        import time
+        ts = int(time.time() * 1000)
+        return [
+            (
+                b"mystream",
+                [
+                    (f"{ts}-0".encode(), {b"sensor": b"temp_01", b"value": b"23.5"}),
+                    (f"{ts}-1".encode(), {b"sensor": b"temp_02", b"value": b"24.1"}),
+                    (f"{ts}-2".encode(), {b"sensor": b"temp_03", b"value": b"22.8"}),
+                ]
+            )
+        ]
+
+    @pytest.fixture
+    def multi_stream_output(self):
+        """Create multi-stream Redis output for testing."""
+        import time
+        ts = int(time.time() * 1000)
+        return [
+            (
+                b"stream_a",
+                [
+                    (f"{ts}-0".encode(), {b"key": b"a1", b"data": b"value_a1"}),
+                    (f"{ts}-1".encode(), {b"key": b"a2", b"data": b"value_a2"}),
+                ]
+            ),
+            (
+                b"stream_b",
+                [
+                    (f"{ts}-0".encode(), {b"key": b"b1", b"data": b"value_b1"}),
+                ]
+            ),
+        ]
+
+    def test_streams_to_dataframe_basic(self, sample_stream_output):
+        """Test basic conversion of stream output to DataFrame."""
+        df = streams_to_dataframe(sample_stream_output)
+
+        assert len(df) == 3
+        assert "stream" in df.columns
+        assert "id" in df.columns
+        assert "timestamp_ms" in df.columns
+        assert "sensor" in df.columns
+        assert "value" in df.columns
+
+        # Check all streams are "mystream"
+        assert (df["stream"] == "mystream").all()
+        # Check values are decoded
+        assert df.iloc[0]["sensor"] == "temp_01"
+        assert df.iloc[0]["value"] == "23.5"
+
+    def test_streams_to_dataframe_empty(self):
+        """Test conversion of empty stream output."""
+        df = streams_to_dataframe([])
+        assert df.empty
+
+    def test_streams_to_dataframe_multi_stream(self, multi_stream_output):
+        """Test conversion with multiple streams."""
+        df = streams_to_dataframe(multi_stream_output)
+
+        assert len(df) == 3
+        # Check both streams are present
+        streams = set(df["stream"])
+        assert "stream_a" in streams
+        assert "stream_b" in streams
+
+    def test_streams_to_dataframe_custom_columns(self, sample_stream_output):
+        """Test custom column names."""
+        df = streams_to_dataframe(
+            sample_stream_output,
+            stream_name_column="source",
+            id_column="msg_id",
+            timestamp_column="ts",
+        )
+
+        assert "source" in df.columns
+        assert "msg_id" in df.columns
+        assert "ts" in df.columns
+
+    def test_streams_to_dataframe_with_sequence(self, sample_stream_output):
+        """Test including sequence number."""
+        df = streams_to_dataframe(sample_stream_output, include_sequence=True)
+
+        assert "sequence" in df.columns
+        assert df.iloc[0]["sequence"] == 0
+        assert df.iloc[1]["sequence"] == 1
+        assert df.iloc[2]["sequence"] == 2
+
+    def test_streams_to_dataframe_fast(self, sample_stream_output):
+        """Test fast conversion produces same results as regular."""
+        df1 = streams_to_dataframe(sample_stream_output)
+        df2 = streams_to_dataframe_fast(sample_stream_output)
+
+        # Should have same columns and values
+        assert list(df1.columns) == list(df2.columns)
+        assert len(df1) == len(df2)
+
+        # Compare values (excluding exact column order)
+        for col in df1.columns:
+            assert (df1[col] == df2[col]).all()
+
+    def test_streams_to_dataframe_fast_empty(self):
+        """Test fast conversion of empty stream output."""
+        df = streams_to_dataframe_fast([])
+        assert df.empty
+
+
+class TestPruneOldDataFrameRows:
+    """Tests for time-based row pruning."""
+
+    @pytest.fixture
+    def time_series_df(self):
+        """Create a DataFrame with timestamp column."""
+        import pandas as pd
+        # Use a fixed reference time for deterministic tests
+        now = 1000.0  # Fixed reference time
+        return pd.DataFrame({
+            "timestamp_ms": [(now - age) * 1000 for age in [1, 5, 10, 30, 60, 120]],
+            "value": range(6),
+            "age_seconds": [1, 5, 10, 30, 60, 120],
+        }), now
+
+    def test_prune_keeps_recent_data(self, time_series_df):
+        """Test that recent data is kept."""
+        df, now = time_series_df
+        pruned = prune_old_dataframe_rows(df, cutoff_seconds=60, current_time=now)
+        # Should keep rows with age_seconds 1, 5, 10, 30, 60
+        assert len(pruned) == 5
+        assert pruned["age_seconds"].max() == 60
+
+    def test_prune_removes_old_data(self, time_series_df):
+        """Test that old data is removed."""
+        df, now = time_series_df
+        pruned = prune_old_dataframe_rows(df, cutoff_seconds=30, current_time=now)
+        # Should keep rows with age_seconds 1, 5, 10, 30
+        assert len(pruned) == 4
+        assert pruned["age_seconds"].max() == 30
+
+    def test_prune_empty_dataframe(self):
+        """Test pruning empty DataFrame."""
+        df = pd.DataFrame()
+        pruned = prune_old_dataframe_rows(df, cutoff_seconds=60)
+        assert pruned.empty
+
+    def test_prune_missing_timestamp_column(self):
+        """Test pruning DataFrame without timestamp column."""
+        df = pd.DataFrame({"value": [1, 2, 3]})
+        pruned = prune_old_dataframe_rows(df, cutoff_seconds=60)
+        assert len(pruned) == 3  # Returns unchanged
+
+    def test_prune_with_custom_column(self):
+        """Test pruning with custom timestamp column name."""
+        import time
+        import pandas as pd
+        now = time.time()
+        df = pd.DataFrame({
+            "custom_ts": [(now - age) * 1000 for age in [1, 60, 120]],
+            "value": [1, 2, 3],
+        })
+        pruned = prune_old_dataframe_rows(
+            df, cutoff_seconds=60, timestamp_column="custom_ts"
+        )
+        assert len(pruned) == 1  # Only 1-second-old row
+
+    def test_prune_with_explicit_current_time(self, time_series_df):
+        """Test pruning with explicit current_time parameter."""
+        df, now = time_series_df
+        # All rows are within 60 seconds when using the fixture's reference time
+        pruned = prune_old_dataframe_rows(
+            df,
+            cutoff_seconds=60,
+            current_time=now,
+        )
+        # Rows with age_seconds <= 60 are kept: 1, 5, 10, 30, 60
+        assert len(pruned) == 5
+
+
+class TestTimeSeriesBuffer:
+    """Tests for TimeSeriesBuffer class."""
+
+    def test_buffer_append_and_get(self):
+        """Test basic append and get operations."""
+        import time
+        import pandas as pd
+
+        buffer = TimeSeriesBuffer(max_age_seconds=60.0)
+
+        df = pd.DataFrame({
+            "timestamp_ms": [time.time() * 1000],
+            "value": [42],
+        })
+
+        buffer.append(df)
+        result = buffer.get()
+
+        assert len(result) == 1
+        assert result.iloc[0]["value"] == 42
+
+    def test_buffer_pruning(self):
+        """Test that old data is pruned."""
+        import time
+        import pandas as pd
+
+        # Very short buffer (0.1 seconds)
+        buffer = TimeSeriesBuffer(max_age_seconds=0.1)
+
+        # Add old data
+        old_time = (time.time() - 10) * 1000  # 10 seconds ago
+        old_df = pd.DataFrame({
+            "timestamp_ms": [old_time],
+            "value": ["old"],
+        })
+        buffer.append(old_df)
+
+        # Add new data
+        new_df = pd.DataFrame({
+            "timestamp_ms": [time.time() * 1000],
+            "value": ["new"],
+        })
+        buffer.append(new_df)
+
+        # Only new data should remain
+        result = buffer.get()
+        assert len(result) == 1
+        assert result.iloc[0]["value"] == "new"
+
+    def test_buffer_max_rows(self):
+        """Test max_rows limit."""
+        import time
+        import pandas as pd
+
+        buffer = TimeSeriesBuffer(max_age_seconds=3600, max_rows=5)
+
+        # Add 10 rows
+        for i in range(10):
+            df = pd.DataFrame({
+                "timestamp_ms": [time.time() * 1000],
+                "value": [i],
+            })
+            buffer.append(df)
+
+        # Should only keep last 5
+        assert len(buffer) == 5
+
+    def test_buffer_clear(self):
+        """Test clear operation."""
+        import time
+        import pandas as pd
+
+        buffer = TimeSeriesBuffer(max_age_seconds=60.0)
+
+        df = pd.DataFrame({
+            "timestamp_ms": [time.time() * 1000],
+            "value": [1],
+        })
+        buffer.append(df)
+        assert len(buffer) == 1
+
+        buffer.clear()
+        assert len(buffer) == 0
+
+    def test_buffer_last_timestamp(self):
+        """Test last_timestamp property."""
+        import time
+        import pandas as pd
+
+        buffer = TimeSeriesBuffer(max_age_seconds=60.0)
+        assert buffer.last_timestamp is None
+
+        ts = time.time() * 1000
+        df = pd.DataFrame({
+            "timestamp_ms": [ts],
+            "value": [1],
+        })
+        buffer.append(df)
+
+        assert buffer.last_timestamp == ts
+
+    def test_buffer_empty(self):
+        """Test empty buffer behavior."""
+        buffer = TimeSeriesBuffer(max_age_seconds=60.0)
+        assert len(buffer) == 0
+        assert buffer.get().empty
+        assert buffer.last_timestamp is None

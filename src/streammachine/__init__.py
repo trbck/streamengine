@@ -16,6 +16,11 @@ from .models import (
     StreamTopic,
     dataclass_list_to_dataframe,
     dataframe_to_dataclass_list,
+    streams_to_dataframe,
+    streams_to_dataframe_fast,
+    prune_old_dataframe_rows,
+    TimeSeriesBuffer,
+    StreamOutput,
 )
 from .redisapi import RedisConnection
 from .storage import Storage
@@ -50,6 +55,12 @@ __all__ = [
     # Utilities
     "dataclass_list_to_dataframe",
     "dataframe_to_dataclass_list",
+    # Redis Streams to DataFrame
+    "streams_to_dataframe",
+    "streams_to_dataframe_fast",
+    "prune_old_dataframe_rows",
+    "TimeSeriesBuffer",
+    "StreamOutput",
     # Optional
     "RedisObjectStorage",
     "decode_dict_bytes_to_utf8",
