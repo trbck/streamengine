@@ -367,6 +367,60 @@ class TestStreamsToDataFrame:
         df = streams_to_dataframe_fast([])
         assert df.empty
 
+    def test_streams_to_dataframe_fast_decoded_strings(self):
+        """Test fast conversion handles decoded (str) inputs from Redis client.
+
+        Regression test: Some Redis clients return decoded strings instead of bytes.
+        streams_to_dataframe_fast should handle both bytes and str.
+        """
+        import time
+
+        # Simulate decoded output from Redis client (all strings, no bytes)
+        ts = int(time.time() * 1000)
+        decoded_output = [
+            (
+                "mystream",  # str instead of bytes
+                [
+                    (f"{ts}-0", {"key": "value1", "num": "123"}),  # str keys/values
+                    (f"{ts}-1", {"key": "value2", "num": "456"}),
+                ]
+            )
+        ]
+
+        df = streams_to_dataframe_fast(decoded_output)
+
+        assert len(df) == 2
+        assert df.iloc[0]["stream"] == "mystream"
+        assert df.iloc[0]["key"] == "value1"
+        assert df.iloc[0]["num"] == "123"
+
+    def test_streams_to_dataframe_fast_mixed_types(self):
+        """Test fast conversion handles mixed bytes/str inputs."""
+        import time
+
+        ts = int(time.time() * 1000)
+        # Mix of bytes and str
+        mixed_output = [
+            (
+                b"stream1",
+                [
+                    (f"{ts}-0".encode(), {b"key": b"value"}),  # all bytes
+                ]
+            ),
+            (
+                "stream2",
+                [
+                    (f"{ts}-1", {"key": "value"}),  # all str
+                ]
+            )
+        ]
+
+        df = streams_to_dataframe_fast(mixed_output)
+
+        assert len(df) == 2
+        assert set(df["stream"]) == {"stream1", "stream2"}
+        assert list(df["key"]) == ["value", "value"]
+
 
 class TestPruneOldDataFrameRows:
     """Tests for time-based row pruning."""
@@ -544,4 +598,41 @@ class TestTimeSeriesBuffer:
         buffer = TimeSeriesBuffer(max_age_seconds=60.0)
         assert len(buffer) == 0
         assert buffer.get().empty
+        assert buffer.last_timestamp is None
+
+    def test_buffer_prune_on_read_idle_stream(self):
+        """Test that stale rows are removed on read even without new appends.
+
+        Regression test: When stream goes idle, get() should still prune
+        old data to maintain the sliding window contract.
+        """
+        import time
+        import pandas as pd
+
+        # Buffer with 0.5 second max age
+        buffer = TimeSeriesBuffer(max_age_seconds=0.5)
+
+        # Add data that's current now
+        current_time = time.time()
+        df = pd.DataFrame({
+            "timestamp_ms": [current_time * 1000],
+            "value": ["data"],
+        })
+        buffer.append(df)
+
+        # Verify data is there
+        assert len(buffer) == 1
+        assert len(buffer.get()) == 1
+
+        # Wait for data to become stale (older than 0.5 seconds)
+        time.sleep(0.6)
+
+        # Without any append, get() should prune stale data
+        result = buffer.get()
+        assert result.empty, "Stale data should be pruned on read"
+
+        # len() should also reflect pruned state
+        assert len(buffer) == 0
+
+        # last_timestamp should be None after pruning
         assert buffer.last_timestamp is None

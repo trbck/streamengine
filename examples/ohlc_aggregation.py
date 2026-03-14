@@ -132,17 +132,19 @@ class OHLCConsumer:
             max_age_seconds=max_age_seconds,
             max_rows=10000,  # Safety limit
         )
-        self.last_ohlc: dict[str, OHLC] = {}
+        # Track last emitted candle timestamp to avoid duplicate emissions
+        self._last_emitted_ts: float | None = None
 
     def process_tick(self, tick_df: pd.DataFrame) -> dict | None:
         """
-        Process incoming tick DataFrame and return updated OHLC if available.
+        Process incoming tick DataFrame and return new OHLC candle if one completed.
 
         Args:
             tick_df: DataFrame from streams_to_dataframe with tick data
 
         Returns:
-            Dictionary with OHLC data if a candle completed, None otherwise
+            Dictionary with OHLC data if a NEW candle completed, None otherwise.
+            Each candle is emitted only once, when it first completes.
         """
         if tick_df.empty:
             return None
@@ -166,17 +168,25 @@ class OHLCConsumer:
         now_ms = time.time() * 1000
         current_interval_start = (int(now_ms // 1000) // self.interval_seconds) * self.interval_seconds * 1000
 
-        # Return candles that have completed (interval start < current interval)
+        # Find candles that have completed (interval start < current interval)
         completed = ohlc_df[ohlc_df["timestamp_ms"] < current_interval_start]
 
         if completed.empty:
             return None
 
         # Get the most recent completed candle
+        latest_ts = completed["timestamp_ms"].iloc[-1]
         latest = completed.iloc[-1]
 
+        # Only emit if this is a NEW candle (timestamp advanced)
+        if self._last_emitted_ts is not None and latest_ts <= self._last_emitted_ts:
+            return None
+
+        # Update last emitted and return the candle
+        self._last_emitted_ts = latest_ts
+
         return {
-            "timestamp": latest["timestamp_ms"],
+            "timestamp": latest_ts,
             "open": latest["open"],
             "high": latest["high"],
             "low": latest["low"],

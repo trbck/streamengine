@@ -185,6 +185,13 @@ def streams_to_dataframe(
     return pd.DataFrame.from_records(rows)
 
 
+def _decode_if_bytes(value: Union[bytes, str]) -> str:
+    """Decode bytes to str if necessary, pass through str unchanged."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
 def streams_to_dataframe_fast(
     streams: StreamOutput,
     stream_name_column: str = "stream",
@@ -203,7 +210,7 @@ def streams_to_dataframe_fast(
     conversion. For more flexibility, use streams_to_dataframe().
 
     Args:
-        streams: Raw Redis streams output
+        streams: Raw Redis streams output (supports both bytes and str keys/values)
         stream_name_column: Column name for stream name
         id_column: Column name for stream ID
         timestamp_column: Column name for timestamp
@@ -218,9 +225,10 @@ def streams_to_dataframe_fast(
     all_rows = []
 
     for stream_name, messages in streams:
-        stream_str = stream_name.decode("utf-8")
+        # Handle both bytes and str (decoded responses from Redis)
+        stream_str = _decode_if_bytes(stream_name)
         for msg_id, msg_data in messages:
-            msg_id_str = msg_id.decode("utf-8")
+            msg_id_str = _decode_if_bytes(msg_id)
             timestamp_ms = float(msg_id_str.rsplit("-", 1)[0])
 
             # Build row as dict, then extend with decoded data
@@ -230,12 +238,18 @@ def streams_to_dataframe_fast(
                 timestamp_column: timestamp_ms,
             }
 
-            # Inline decode for speed
-            if _has_cython_decode and decode_dict_bytes_to_utf8 is not None:
-                row.update(decode_dict_bytes_to_utf8(msg_data))
+            # Decode values - handle both bytes and str
+            if _has_cython_decode and decode_dict_bytes_to_utf8 is not None and isinstance(msg_data, dict):
+                # Cython path only works with bytes
+                if msg_data and isinstance(list(msg_data.keys())[0], bytes):
+                    row.update(decode_dict_bytes_to_utf8(msg_data))
+                else:
+                    # Already decoded or mixed types
+                    for k, v in msg_data.items():
+                        row[_decode_if_bytes(k)] = _decode_if_bytes(v) if isinstance(v, bytes) else v
             else:
                 for k, v in msg_data.items():
-                    row[k.decode("utf-8")] = v.decode("utf-8")
+                    row[_decode_if_bytes(k)] = _decode_if_bytes(v) if isinstance(v, bytes) else v
 
             all_rows.append(row)
 
@@ -351,11 +365,16 @@ class TimeSeriesBuffer:
 
     def get(self) -> pd.DataFrame:
         """
-        Get the current buffer contents.
+        Get the current buffer contents, pruning stale rows first.
+
+        This ensures that even if the stream goes idle, stale data is
+        removed when you read from the buffer.
 
         Returns:
-            DataFrame with all buffered data (may be empty)
+            DataFrame with all buffered data within max_age_seconds (may be empty)
         """
+        # Prune on read to handle idle streams
+        self._prune()
         return self._df.copy()
 
     def clear(self) -> None:
@@ -363,12 +382,14 @@ class TimeSeriesBuffer:
         self._df = pd.DataFrame()
 
     def __len__(self) -> int:
-        """Return number of rows in buffer."""
+        """Return number of rows in buffer (after pruning stale data)."""
+        self._prune()  # Ensure accurate count by pruning first
         return len(self._df)
 
     @property
     def last_timestamp(self) -> Optional[float]:
         """Get the most recent timestamp in the buffer."""
+        self._prune()  # Ensure we're checking current data
         if self._df.empty or self.timestamp_column not in self._df.columns:
             return None
         return float(self._df[self.timestamp_column].iloc[-1])
