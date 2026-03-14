@@ -240,11 +240,16 @@ def streams_to_dataframe_fast(
 
             # Decode values - handle both bytes and str
             if _has_cython_decode and decode_dict_bytes_to_utf8 is not None and isinstance(msg_data, dict):
-                # Cython path only works with bytes
-                if msg_data and isinstance(list(msg_data.keys())[0], bytes):
+                # Cython path only works with all-bytes keys and values
+                # Check all items, not just the first key
+                all_bytes = msg_data and all(
+                    isinstance(k, bytes) and isinstance(v, bytes)
+                    for k, v in msg_data.items()
+                )
+                if all_bytes:
                     row.update(decode_dict_bytes_to_utf8(msg_data))
                 else:
-                    # Already decoded or mixed types
+                    # Already decoded or mixed types - decode per-item
                     for k, v in msg_data.items():
                         row[_decode_if_bytes(k)] = _decode_if_bytes(v) if isinstance(v, bytes) else v
             else:

@@ -37,6 +37,14 @@ except ImportError:
     decode_dict_bytes_to_utf8 = None  # type: ignore
     _has_cython_decode = False
 
+# MCP server (optional, requires 'mcp' extra)
+try:
+    from .mcp_server import server as mcp_server, run_server as mcp_run_server, main as mcp_main
+except ImportError:
+    mcp_server = None  # type: ignore
+    mcp_run_server = None  # type: ignore
+    mcp_main = None  # type: ignore
+
 __all__ = [
     # Version
     "__version__",
@@ -65,4 +73,8 @@ __all__ = [
     "RedisObjectStorage",
     "decode_dict_bytes_to_utf8",
     "_has_cython_decode",
+    # MCP Server (optional)
+    "mcp_server",
+    "mcp_run_server",
+    "mcp_main",
 ]

@@ -421,6 +421,38 @@ class TestStreamsToDataFrame:
         assert set(df["stream"]) == {"stream1", "stream2"}
         assert list(df["key"]) == ["value", "value"]
 
+    def test_streams_to_dataframe_fast_mixed_within_message(self):
+        """Test fast conversion handles mixed bytes/str within a SINGLE message.
+
+        Regression test: Previously, checking only the first key would route
+        partially-mixed dicts to the Cython decoder, which expects all-bytes.
+        """
+        import time
+
+        ts = int(time.time() * 1000)
+        # Single message with mixed bytes and str keys/values within the same dict
+        mixed_within_message = [
+            (
+                b"stream",
+                [
+                    # Mix of bytes and str keys/values in the SAME message dict
+                    (f"{ts}-0".encode(), {
+                        b"bytes_key": b"bytes_value",
+                        "str_key": "str_value",
+                        b"mixed_key": "str_value_for_bytes_key",
+                    }),
+                ]
+            )
+        ]
+
+        df = streams_to_dataframe_fast(mixed_within_message)
+
+        assert len(df) == 1
+        assert df.iloc[0]["stream"] == "stream"
+        assert df.iloc[0]["bytes_key"] == "bytes_value"
+        assert df.iloc[0]["str_key"] == "str_value"
+        assert df.iloc[0]["mixed_key"] == "str_value_for_bytes_key"
+
 
 class TestPruneOldDataFrameRows:
     """Tests for time-based row pruning."""
@@ -608,31 +640,34 @@ class TestTimeSeriesBuffer:
         """
         import time
         import pandas as pd
+        from unittest.mock import patch
 
-        # Buffer with 0.5 second max age
-        buffer = TimeSeriesBuffer(max_age_seconds=0.5)
+        # Use fixed timestamps for deterministic test (no sleep needed)
+        start_time = 1000.0
 
-        # Add data that's current now
-        current_time = time.time()
-        df = pd.DataFrame({
-            "timestamp_ms": [current_time * 1000],
-            "value": ["data"],
-        })
-        buffer.append(df)
+        with patch('time.time', return_value=start_time):
+            buffer = TimeSeriesBuffer(max_age_seconds=60.0)
 
-        # Verify data is there
-        assert len(buffer) == 1
-        assert len(buffer.get()) == 1
+            # Add data at start_time
+            df = pd.DataFrame({
+                "timestamp_ms": [start_time * 1000],
+                "value": ["fresh"],
+            })
+            buffer.append(df)
 
-        # Wait for data to become stale (older than 0.5 seconds)
-        time.sleep(0.6)
+            # Data should be present at start_time
+            assert len(buffer) == 1
+            assert len(buffer.get()) == 1
 
-        # Without any append, get() should prune stale data
-        result = buffer.get()
-        assert result.empty, "Stale data should be pruned on read"
+        # Now simulate time passing beyond max_age_seconds
+        # Move time forward by 61 seconds (beyond the 60s max_age)
+        with patch('time.time', return_value=start_time + 61):
+            # Without any append, get() should prune stale data
+            result = buffer.get()
+            assert result.empty, "Stale data should be pruned on read"
 
-        # len() should also reflect pruned state
-        assert len(buffer) == 0
+            # len() should also reflect pruned state
+            assert len(buffer) == 0
 
-        # last_timestamp should be None after pruning
-        assert buffer.last_timestamp is None
+            # last_timestamp should be None after pruning
+            assert buffer.last_timestamp is None

@@ -54,12 +54,15 @@ monitoring = [
     "structlog>=23.0.0",
     "prometheus-client>=0.17.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 all = [
-    "streammachine[dev,cython,fast-json,monitoring]",
+    "streammachine[dev,cython,fast-json,monitoring,mcp]",
 ]
 
-# [project.scripts]
-# streammachine = "streammachine.cli:main"
+[project.scripts]
+streammachine-mcp = "streammachine.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/anthropics/streammachine"
@@ -133,6 +136,7 @@ module = [
     "uvloop.*",
     "pandas.*",
     "numpy.*",
+    "mcp.*",
 ]
 ignore_missing_imports = true
 
