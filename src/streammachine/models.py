@@ -1,3 +1,23 @@
+"""
+StreamMachine Models Module
+
+This module provides data models and utilities for Redis Streams processing:
+- Message: Wrapper for stream messages with metadata
+- TimeSeriesBuffer: In-memory sliding window for time series data
+- Stream conversion functions: Convert Redis stream output to pandas DataFrames
+- Configuration dataclasses: AppConfig, ConsumerConfig, TimerConfig
+
+Performance Notes:
+- streams_to_dataframe_fast() uses Cython acceleration when available
+- TimeSeriesBuffer prunes old data automatically to limit memory usage
+- Message decoding uses Cython for bytes->string conversion if compiled
+
+Redis Stream ID Format:
+    Stream IDs are "milliseconds-sequence" (e.g., "1638360000000-0")
+    - milliseconds: Unix timestamp in milliseconds
+    - sequence: Sequence number for messages in same millisecond
+    This allows precise ordering and timestamp extraction.
+"""
 from __future__ import annotations
 
 import json

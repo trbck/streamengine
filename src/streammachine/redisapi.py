@@ -1,3 +1,46 @@
+"""
+StreamMachine Redis API Module
+
+This module provides the RedisConnection class for async Redis operations
+using coredis, an async-first Redis client.
+
+Why coredis instead of redis-py?
+    coredis is designed from the ground up for async operations:
+    - Native async/await support (no sync-to-async wrappers)
+    - Type hints throughout the codebase
+    - Connection pooling with proper async context managers
+    - Stream patterns (GroupConsumer) built-in
+
+    redis-py's async support was added later and can have edge cases
+    with connection management. coredis avoids these issues.
+
+Connection Pooling:
+    Each RedisConnection instance manages a connection pool. The pool
+    is created lazily on first access and must be entered as an async
+    context before use (coredis 6.x requirement).
+
+    Key methods:
+    - _ensure_pool(): Enters the pool context (creates task group)
+    - close(): Exits the pool context and closes connections
+
+Consumer Groups:
+    Consumer groups enable horizontal scaling. Multiple consumers in
+    the same group share the message load:
+    - Each message is delivered to exactly one consumer
+    - Consumers track their position in the stream
+    - Pending Entries List (PEL) tracks unacknowledged messages
+
+    The GroupConsumer class from coredis provides:
+    - Automatic group creation (if not exists)
+    - XREADGROUP with configurable timeout
+    - Optional auto-acknowledge
+
+Example:
+    async with RedisConnection() as rc:
+        consumer = await rc.consumer("my_stream", "consumer_1", "my_group")
+        async for stream, entry in consumer:
+            print(f"Got message from {stream}: {entry}")
+"""
 from __future__ import annotations
 
 import asyncio
@@ -22,17 +65,53 @@ logger = logging.getLogger(__name__)
 class RedisConnection:
     """
     Async Redis connection manager using coredis with connection pooling.
-    Provides consumer group support for Redis Streams.
 
-    Can be initialized with individual parameters or a connection URL.
-    Supports async context manager protocol for proper resource cleanup.
+    Provides consumer group support for Redis Streams and async context
+    manager protocol for proper resource cleanup.
+
+    Connection Management:
+        The client uses lazy initialization - the Redis client and pool
+        are created on first access. This avoids issues with coredis 6.x
+        requiring an async context for the connection pool.
+
+        Always use the async context manager for proper cleanup::
+
+            async with RedisConnection() as rc:
+                await rc.client.set("key", "value")
+
+        Or manually manage::
+
+            rc = RedisConnection()
+            await rc._ensure_pool()  # Must call before any operation
+            try:
+                await rc.client.set("key", "value")
+            finally:
+                await rc.close()
+
+    Connection Pooling:
+        The max_connections parameter controls pool size. Each concurrent
+        operation needs its own connection. For high-throughput apps,
+        increase this (e.g., 50-100 for hundreds of concurrent agents).
+
+    Environment Variables:
+        REDIS_URL: Full connection URL (redis://host:port/db)
+        REDIS_HOST: Host if not using URL
+        REDIS_PORT: Port if not using URL
+        REDIS_DB: Database number if not using URL
+        REDIS_MAX_CONNECTIONS: Pool size
 
     Example:
-        async with RedisConnection() as rc:
-            await rc.client.set("key", "value")
+        With URL::
 
-        # Or with URL:
-        rc = RedisConnection(url="redis://localhost:6379/0")
+            rc = RedisConnection(url="redis://localhost:6379/0")
+            async with rc:
+                await rc.client.set("key", "value")
+
+        With individual params::
+
+            rc = RedisConnection(host="localhost", port=6379, db=0)
+            async with rc:
+                consumer = await rc.consumer("stream", "consumer1", "group")
     """
 
     def __init__(

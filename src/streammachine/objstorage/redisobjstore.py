@@ -1,4 +1,52 @@
-"""Redis Object Storage with pickle serialization."""
+"""
+StreamMachine Redis Object Storage Module
+
+This module provides RedisObjectStorage for storing Python objects in Redis
+with automatic pickle serialization.
+
+Why pickle?
+    Redis stores bytes, and pickle provides:
+    - Serialization of arbitrary Python objects
+    - Handles complex types (nested dicts, custom classes)
+    - Preserves object identity and references
+
+    Security note: Only unpickle data from trusted sources. Pickle can
+    execute arbitrary code during deserialization.
+
+Distributed Locking:
+    The store_with_pickle method uses Redis's distributed lock to prevent
+    concurrent writes to the same key. This is important when multiple
+    processes/instances might try to update the same key simultaneously.
+
+    Lock behavior:
+    - Default wait time: None (waits indefinitely)
+    - Lock is automatically released when context exits
+    - Lock key is "lock:{data_key}"
+
+When to use:
+    - Sharing state between independent services
+    - Persisting complex Python objects
+    - When you need distributed locking for writes
+
+When NOT to use:
+    - Simple string/number values (use Redis directly)
+    - High-frequency writes (lock contention will slow you down)
+    - When data must be readable by non-Python services (use JSON)
+
+Example:
+    async with RedisObjectStorage() as storage:
+        # Store a complex object
+        await storage.store_with_pickle('model', {'weights': [1, 2, 3]})
+
+        # Retrieve it
+        model = await storage.retrieve_with_pickle('model')
+
+        # List keys matching pattern
+        keys = await storage.list_keys('model:*')
+
+        # Clean up
+        await storage.delete_keys('model:*')
+"""
 import redis.asyncio as redis
 import pickle
 import time

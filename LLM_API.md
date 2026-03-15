@@ -568,11 +568,24 @@ pip install streammachine[mcp]
 ### Running the MCP Server
 
 ```bash
-# Command line
+# Command line (stdio server)
 streammachine-mcp
 
 # Or as a Python module
 python -m streammachine.mcp_server
+
+# Or using __main__.py
+python -m streammachine
+```
+
+### Testing the MCP Server
+
+```bash
+# Run the test client (validates all handlers)
+python tests/test_mcp_client.py
+
+# Use MCP Inspector with FastMCP version
+mcp dev src/streammachine/mcp_fast.py --with-editable .
 ```
 
 ### Claude Desktop Configuration

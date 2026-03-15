@@ -1,3 +1,51 @@
+"""
+StreamMachine Storage Module
+
+This module provides a singleton Storage class for sharing state between
+agents, timers, and across process boundaries.
+
+Why multiprocessing.Manager?
+    Python's multiprocessing.Manager creates a separate process that manages
+    shared state. This is essential for cross-process communication when using
+    agents with `processes=N`. Each worker process can read/write to Storage
+    and see changes made by other processes.
+
+    Alternative approaches and why they don't work:
+    - threading.Lock: Only works within a single process
+    - asyncio.Lock: Only works within a single event loop
+    - multiprocessing.Value/Array: Requires predefined data types
+
+    The Manager provides a dict() that can store arbitrary Python objects
+    and a Queue() for inter-process communication.
+
+Design Decisions:
+    - Deferred manager startup: Manager is created on first use to avoid
+      issues with macOS spawn multiprocessing (can't pickle at module level)
+    - Per-key locking: Each key has its own asyncio.Lock, preventing
+      write contention on different keys
+    - Optional read locking: By default, reads don't lock (faster) but
+      lock_reading=True enables read locking for strong consistency
+
+Example:
+    Within-process state sharing::
+
+        storage = Storage()
+        await storage.write("counter", 0)
+
+        @app.agent("events")
+        async def process(msg):
+            count = await storage.read("counter", default=0)
+            await storage.write("counter", count + 1)
+
+    Cross-process state sharing::
+
+        @app.agent("data", processes=4)
+        async def worker(msg):
+            # Each process can read/write to shared storage
+            state = await storage.read("shared_state", default={})
+            state[msg.key] = msg.value
+            await storage.write("shared_state", state)
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +64,16 @@ class Storage:
 
     Uses asyncio.Lock for per-key write protection. Thread-safe singleton pattern
     ensures only one instance exists across the application.
+
+    Thread/Process Safety:
+        - Singleton pattern uses double-checked locking with threading.Lock
+        - Per-key asyncio.Lock prevents concurrent writes to same key
+        - multiprocessing.Manager provides cross-process state sharing
+
+    Memory Management:
+        - shared_dict stores all values (in Manager process memory)
+        - _key_locks are local to each process (Manager doesn't share Locks)
+        - Call clear() to free memory when done
 
     Example:
         storage = Storage()

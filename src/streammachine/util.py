@@ -1,3 +1,38 @@
+"""
+StreamMachine Utility Module
+
+This module provides decorators and utilities for task registration
+and async/sync bridging.
+
+Decorator Discovery with Venusian:
+    Venusian enables "deferred decorator" patterns. Instead of executing
+    immediately at import time, decorators attach metadata that can be
+    scanned later. This is essential for:
+
+    1. Avoiding circular imports: Decorators can reference the App
+       instance before it's fully configured
+    2. Cleaner API: Users just add @app.agent/@app.timer decorators
+    3. Testing: Tests can selectively scan specific modules
+
+    How it works:
+        @app.agent("stream")
+        async def handler(msg): ...
+
+        # At import time, venusian.attach() stores metadata
+        # When App.start() is called, scanner.scan() finds all
+        # decorated functions and registers them
+
+Async/Sync Bridging:
+    AsyncToSync and SyncToAsync are utilities for calling across
+    the async/sync boundary. These are adapted from Django/Django
+    Channels patterns and are useful when:
+    - Mixing async handlers with sync libraries
+    - Running sync I/O in thread pools to avoid blocking
+
+    Note: For StreamMachine apps, prefer writing async handlers
+    and using async Redis operations. Use SyncToAsync only when
+    you must call sync code from an async context.
+"""
 #https://gitlab.com/pineiden/tasktools/blob/master/tasktools/async_queue.py
 from multiprocessing import Manager, cpu_count
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
@@ -12,8 +47,6 @@ from typing import Any, Callable, Optional, Awaitable
 
 from .models import ConsumerConfig, TimerConfig
 
-#from .client import xack, xlen
-
 try:
     import contextvars  # Python 3.7+ only.
 except ImportError:
@@ -24,6 +57,24 @@ except ImportError:
 class AgentTaskDecorator:
     """
     Decorator for registering agent (consumer) tasks with Venusian.
+
+    This decorator marks a function as a stream consumer. When the App
+    starts, Venusian scans all modules and registers these functions
+    as stream consumers.
+
+    Usage:
+        @app.agent("my_stream", group="my_group", concurrency=2)
+        async def handler(message: Message):
+            print(message.message)
+
+    Args:
+        stream: Redis stream name to consume from
+        group: Consumer group name (default: "eventengine")
+        concurrency: Number of concurrent coroutines for this agent
+        processes: Number of worker processes (for CPU-bound work)
+
+    Note: The decorator doesn't execute at import time. Instead, it
+    attaches metadata that App._discover() collects during startup.
     """
     def __init__(self, stream: str, group: Optional[str] = None, concurrency: int = 1, processes: Optional[int] = None):
         self.config = ConsumerConfig("agent", stream, group, concurrency, processes)
@@ -48,6 +99,23 @@ class AgentTaskDecorator:
 class TimerTaskDecorator:
     """
     Decorator for registering timer tasks with Venusian.
+
+    Timer tasks run periodically at a specified interval (in seconds).
+    They're useful for:
+    - Producing messages to streams (scheduled data generation)
+    - Periodic cleanup/maintenance tasks
+    - Health checks and metrics collection
+
+    Usage:
+        @app.timer(5)  # Run every 5 seconds
+        async def periodic_task():
+            await app.send("ticks", {"time": time.time()})
+
+    Note: Timers don't overlap - each run waits for the previous
+    to complete before starting the next interval.
+
+    Args:
+        t: Interval in seconds between runs
     """
     def __init__(self, t: int):
         self.config = TimerConfig("timer", t)
@@ -71,6 +139,20 @@ class TimerTaskDecorator:
 class Registry:
     """
     Venusian registry class for collecting registered agent/timer configs.
+
+    The Registry is populated during App._discover() when Venusian scans
+    modules for decorated functions. Each entry is a ConsumerConfig or
+    TimerConfig with:
+    - decorator_type: "agent" or "timer"
+    - topic: Stream name (for agents)
+    - t: Interval in seconds (for timers)
+    - mod: Module where the decorated function is defined
+    - obj_name: Function name
+    - inner_vars: Function signature for validation
+
+    After discovery, App uses this registry to create:
+    - StreamConsumer instances for each agent config
+    - Timer coroutines for each timer config
     """
     def __init__(self) -> None:
         self.registered = []
@@ -82,6 +164,22 @@ class Registry:
 class AsyncToSync:
     """
     Utility class to turn an awaitable into a synchronous callable for subthreads.
+
+    This is useful when you need to call async code from sync code, such as
+    in a thread pool executor or a sync callback.
+
+    Why is this needed?
+        Python's asyncio is single-threaded by default. You can't just call
+        an async function from sync code - you need an event loop. This class:
+        1. Captures the main event loop at creation time
+        2. Provides a __call__ that schedules the async function on that loop
+        3. Blocks until the result is ready
+
+    Limitations:
+        - Cannot be called from within an async event loop thread
+        - The event loop must be running (or we create a new one)
+
+    Adapted from: Django Channels async_to_sync
     """
     def __init__(self, awaitable: Awaitable):
         self.awaitable = awaitable
@@ -129,6 +227,26 @@ class AsyncToSync:
 class SyncToAsync:
     """
     Utility class to turn a synchronous callable into an awaitable that runs in a threadpool.
+
+    This is useful when you need to call blocking sync code from async code,
+    such as file I/O, database operations, or CPU-bound work.
+
+    Why use thread pool?
+        Running sync code directly in an async function blocks the event loop,
+        preventing all other async tasks from running. By running in a thread
+        pool executor, we:
+        1. Keep the event loop responsive
+        2. Allow other async tasks to continue
+        3. Run multiple sync operations concurrently
+
+    Environment Variables:
+        ASGI_THREADS: Set to configure the default thread pool size
+
+    Context Variables:
+        contextvars are preserved when running in the executor, so
+        any context set in the async context is available in the sync function.
+
+    Adapted from: Django Channels sync_to_async
     """
     if "ASGI_THREADS" in os.environ:
         loop = asyncio.get_event_loop()

@@ -1,3 +1,44 @@
+"""
+StreamMachine Application Module
+
+This module provides the core App class and StreamConsumer for building
+async Redis Streams processing applications.
+
+Key Design Decisions:
+- Venusian for decorator discovery: Allows decorators to be scanned at module
+  import time without requiring explicit registration. This enables a clean
+  declarative API where @app.agent and @app.timer just work.
+- uvloop for event loop: Provides 2-4x faster event loop performance vs asyncio
+  default, critical for high-throughput stream processing.
+- ProcessPoolExecutor for CPU-bound work: When `processes=N` is specified, the
+  agent runs in separate processes to bypass Python's GIL for true parallelism.
+- Graceful shutdown: Signal handlers (SIGINT/SIGTERM) trigger cleanup sequence
+  that waits for in-flight messages before terminating.
+
+Architecture Overview:
+    ┌─────────────────────────────────────────────────────────┐
+    │                        App                               │
+    │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
+    │  │  Registry   │  │ Event Loop  │  │ Process/Thread   │  │
+    │  │ (decorators)│  │  (uvloop)   │  │    Pools        │  │
+    │  └─────────────┘  └─────────────┘  └─────────────────┘  │
+    │         │                │                    │         │
+    │         ▼                ▼                    ▼         │
+    │  ┌─────────────────────────────────────────────────┐   │
+    │  │              StreamConsumer                    │   │
+    │  │   - XREADGROUP from consumer group            │   │
+    │  │   - Message parsing (Message object)          │   │
+    │  │   - Handler invocation                        │   │
+    │  │   - Auto-ack (configurable)                   │   │
+    │  └─────────────────────────────────────────────────┘   │
+    │                          │                             │
+    │                          ▼                             │
+    │              ┌─────────────────────┐                   │
+    │              │   Redis Streams      │                   │
+    │              │   (via coredis)      │                   │
+    │              └─────────────────────┘                   │
+    └─────────────────────────────────────────────────────────┘
+"""
 from __future__ import annotations
 
 import asyncio
@@ -42,19 +83,55 @@ class App:
     Main application class that manages the event loop, task discovery,
     and lifecycle of stream consumers and timers.
 
+    Design Pattern:
+        This follows a "registry and run" pattern where:
+        1. Decorators (@app.agent, @app.timer) register tasks in a registry
+        2. Venusian scans modules at import time to discover registered tasks
+        3. App.start() creates the event loop and runs all discovered tasks
+
+    Consumer Groups:
+        Each agent creates a Redis consumer group. Multiple instances of
+        the same app can run in parallel, and Redis will distribute messages
+        among consumers in the same group. This enables horizontal scaling.
+
+    Multiprocessing:
+        For CPU-bound agents, use processes=N to spawn N worker processes.
+        Each process has its own event loop and Redis connection. Use Storage
+        for cross-process state sharing via multiprocessing.Manager.
+
+    Thread Safety:
+        - Storage uses multiprocessing.Manager for cross-process state
+        - Each StreamConsumer has its own RedisConnection
+        - asyncio.Lock in Storage prevents concurrent writes to same key
+
     Example:
-        app = App(name="my_app")
+        Simple agent and timer::
 
-        @app.timer(1)
-        async def my_timer():
-            await app.send("topic", {"data": "value"})
+            app = App(name="my_app")
 
-        @app.agent("topic", group="my_group")
-        async def my_agent(record: Message):
-            print(record)
+            @app.timer(1)  # Run every 1 second
+            async def producer():
+                await app.send("ticks", {"count": 1})
 
-        if __name__ == "__main__":
-            app.start()
+            @app.agent("ticks", group="processors")
+            async def process_tick(record: Message):
+                print(f"Received: {record.message}")
+
+            if __name__ == "__main__":
+                app.start()
+
+        Multiprocess agent for CPU-bound work::
+
+            @app.agent("data", processes=4)  # 4 worker processes
+            async def heavy_processing(record: Message):
+                result = cpu_intensive_work(record.message)
+                await app.send("results", result)
+
+    Args:
+        name: Application name for logging and identification
+        to_scan: Whether to scan for decorated tasks (default True)
+        max_processes: Maximum number of process pool workers
+        max_threads: Maximum number of thread pool workers
     """
 
     def __init__(
@@ -87,7 +164,22 @@ class App:
         self._is_shutting_down = False
 
     def _discover(self) -> None:
-        """Discover decorated agents and timers using Venusian scanner."""
+        """
+        Discover decorated agents and timers using Venusian scanner.
+
+        Venusian provides deferred decorator scanning, which means decorators
+        don't execute at import time. Instead, Venusian attaches metadata to
+        the decorated function, and this method scans the calling module to
+        find all decorated functions.
+
+        Why Venusian vs manual registration?
+            - Cleaner API: Users just add @app.agent decorators
+            - No circular imports: Decorators can reference app before it's built
+            - Lazy discovery: Only scans when start() is called
+
+        The scanner looks at the call stack to find the main module, then
+        recursively scans all imported modules for Venusian attachments.
+        """
         if self.config.to_scan:
             frm = inspect.stack()[len(inspect.stack()) - 1]
             mod = inspect.getmodule(frm[0])
@@ -101,7 +193,16 @@ class App:
                 )
 
     def _get_concurrent_agents(self) -> List[Callable[[], Any]]:
-        """Get list of agent coroutines to run."""
+        """
+        Get list of agent coroutines to run within the main process.
+
+        Returns agents that don't use multiprocessing (processes=None).
+        These agents run as asyncio tasks in the main process's event loop.
+
+        For each agent, we create N coroutine instances where N is the
+        concurrency parameter, allowing parallel message processing within
+        the same process.
+        """
         return [
             agent_container(item)
             for item in self.registry.registered
@@ -118,7 +219,19 @@ class App:
         ]
 
     def _get_multiprocesses_concurrent_agents(self) -> List[Any]:
-        """Get list of agents configured for multiprocess execution."""
+        """
+        Get list of agents configured for multiprocess execution.
+
+        These agents use processes=N to spawn separate processes for
+        CPU-bound work. Each process gets its own event loop and
+        Redis connection, bypassing the GIL for true parallelism.
+
+        Note: Communication between processes is via Storage (which uses
+        multiprocessing.Manager) or Redis streams.
+
+        Returns:
+            List of ConsumerConfig items with processes != None
+        """
         return [
             item
             for item in self.registry.registered
@@ -127,7 +240,19 @@ class App:
         ]
 
     def _setup_signal_handlers(self) -> None:
-        """Set up signal handlers for graceful shutdown."""
+        """
+        Set up signal handlers for graceful shutdown.
+
+        Registers handlers for SIGINT (Ctrl+C) and SIGTERM (kill command).
+        On signal reception:
+        1. Sets _is_shutting_down flag to prevent double-shutdown
+        2. Calls shutdown() to cancel all tasks
+        3. Waits for tasks to complete with timeout
+        4. Closes Redis connections and stops event loop
+
+        Note: On Windows, add_signal_handler raises NotImplementedError.
+        In that case, shutdown must be triggered manually or via Ctrl+C.
+        """
         if self.loop is None:
             return
 
@@ -251,8 +376,20 @@ class App:
         """
         Gracefully shutdown all running tasks.
 
-        Cancels all running tasks and waits for them to complete,
-        then stops the event loop.
+        This method implements a graceful shutdown sequence:
+        1. Set shutdown event to signal timers to stop
+        2. Cancel all pending asyncio tasks
+        3. Wait up to 10 seconds for tasks to complete
+        4. Close Redis connection pool
+        5. Terminate storage manager process
+        6. Stop the event loop
+
+        The 10-second timeout ensures the app doesn't hang indefinitely
+        if a task is stuck. Tasks that don't complete in time are logged
+        as warnings.
+
+        Important: This method should only be called once. The
+        _is_shutting_down flag prevents double-shutdown scenarios.
         """
         self._shutdown_event.set()
         logger.info("Shutting down...")
@@ -360,6 +497,32 @@ class StreamConsumer:
 
     Each consumer creates its own Redis connection and consumer group membership,
     processing messages and passing them to the configured handler function.
+
+    Consumer Group Behavior:
+        Redis Streams consumer groups enable horizontal scaling. Multiple consumers
+        in the same group share the message load - each message is delivered to
+        exactly one consumer in the group.
+
+        Key concepts:
+        - Group: Named group of consumers that share a stream
+        - Consumer: Individual consumer instance (identified by UUID)
+        - Pending Entries List (PEL): Messages claimed but not acknowledged
+        - Backlog: Messages in stream before consumer joined
+
+    Message Flow:
+        1. Consumer calls XREADGROUP to fetch new messages (blocks if empty)
+        2. Message enters PEL (Pending Entries List)
+        3. Handler processes the message
+        4. If auto_acknowledge=True, XACK is called automatically
+        5. If processing fails, message remains in PEL for retry
+
+    Error Handling:
+        The consumer loop catches exceptions and continues processing.
+        Errors are logged with exc_info=True for debugging. The consumer
+        only exits on CancelledError (shutdown) or catastrophic failures.
+
+    Args:
+        config: ConsumerConfig with topic, group, handler function, etc.
     """
 
     def __init__(self, config: ConsumerConfig):
@@ -375,7 +538,25 @@ class StreamConsumer:
         self._rc: Optional[RedisConnection] = None
 
     async def __call__(self) -> None:
-        """Run the consumer loop, processing messages indefinitely."""
+        """
+        Run the consumer loop, processing messages indefinitely.
+
+        This is the main consumer loop that:
+        1. Creates a unique consumer ID (UUID)
+        2. Creates/Joins the consumer group on the stream(s)
+        3. Enters an infinite loop reading messages via XREADGROUP
+        4. Processes each message through the handler function
+        5. Handles graceful shutdown on CancelledError
+
+        The GroupConsumer from coredis provides an async iterator that
+        yields (stream_name, entry) tuples. When the block timeout expires
+        without new messages, the iterator exhausts - we loop back and
+        try again.
+
+        Important: Each consumer gets its own RedisConnection instance.
+        This is necessary because coredis connections are not thread-safe
+        and each async task needs its own connection for concurrent ops.
+        """
         consumer_id = str(uuid.uuid4())
         self._rc = RedisConnection()
         group = self.config.group or DEFAULT_CONSUMER_GROUP
@@ -417,10 +598,23 @@ class StreamConsumer:
         """
         Process a single message from the stream.
 
+        This method wraps the user's handler function with:
+        1. Message parsing (bytes to Message object)
+        2. Timestamp extraction for latency tracking
+        3. Handler invocation with proper error handling
+
+        The Message object provides:
+        - topic: Stream name the message came from
+        - key: Stream entry ID (e.g., "1638360000000-0")
+        - sent: Timestamp when message was produced (if present)
+        - received: Timestamp when message was consumed
+        - data: Raw field-values dict
+        - message: Decoded field-values as strings (property)
+
         Args:
-            stream: Stream name as bytes
-            entry: Message entry from Redis
-            consumer_id: Consumer identifier
+            stream: Stream name as bytes (e.g., b"my_stream")
+            entry: Redis stream entry with identifier and field_values
+            consumer_id: Unique identifier for this consumer instance
         """
         m = Message(
             topic=stream.decode("UTF-8"),

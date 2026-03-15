@@ -3,6 +3,66 @@ StreamMachine - Redis Streams Processing Framework
 
 A simple, lightweight Redis Streams processing library built on coredis.
 Provides decorator-based agent/timer registration with venusian discovery.
+
+Quick Start:
+    >>> from streammachine import App, Message
+    >>>
+    >>> app = App(name="my_app")
+    >>>
+    >>> # Producer: send a message every second
+    >>> @app.timer(1)
+    >>> async def producer():
+    >>>     await app.send("greetings", {"message": "hello"})
+    >>>
+    >>> # Consumer: process messages from the stream
+    >>> @app.agent("greetings", group="greeters")
+    >>> async def consumer(record: Message):
+    >>>     print(f"Received: {record.message}")
+    >>>
+    >>> if __name__ == "__main__":
+    >>>     app.start()
+
+Key Concepts:
+    - Agent: A consumer that reads from Redis Streams and processes messages
+    - Timer: A periodic task that can produce messages to streams
+    - Consumer Group: Multiple consumers sharing the message load
+    - Storage: Cross-process shared state via multiprocessing.Manager
+
+Public API:
+    Core:
+        App: Main application class for stream processing
+        StreamConsumer: Low-level stream consumer (used internally)
+        Message: Message wrapper with topic, key, data, and metadata
+
+    Configuration:
+        AppConfig: Application-level configuration
+        ConsumerConfig: Agent configuration
+        TimerConfig: Timer configuration
+
+    Redis:
+        RedisConnection: Async Redis client with connection pooling
+
+    Storage:
+        Storage: Singleton for cross-process state sharing
+
+    Data Processing:
+        TimeSeriesBuffer: In-memory sliding window for time series
+        streams_to_dataframe: Convert Redis stream output to pandas DataFrame
+        streams_to_dataframe_fast: Optimized conversion (Cython accelerated)
+
+    Utilities:
+        dataclass_list_to_dataframe: Convert dataclass list to DataFrame
+        dataframe_to_dataclass_list: Convert DataFrame to dataclass list
+
+Environment Variables:
+    REDIS_URL: Full Redis connection URL (e.g., redis://localhost:6379/0)
+    REDIS_HOST: Redis host (default: localhost)
+    REDIS_PORT: Redis port (default: 6379)
+    REDIS_DB: Redis database number (default: 0)
+    REDIS_MAX_CONNECTIONS: Connection pool size (default: 10)
+    STREAMMACHINE_RECORDS: Default batch size (default: 10000)
+    STREAMMACHINE_COUNT: Messages per read (default: 10)
+    STREAMMACHINE_DEFAULT_GROUP: Default consumer group name (default: eventengine)
 """
 
 __version__ = "0.1.0"
@@ -45,6 +105,12 @@ except ImportError:
     mcp_run_server = None  # type: ignore
     mcp_main = None  # type: ignore
 
+# FastMCP server (optional, for use with `mcp dev` command)
+try:
+    from .mcp_fast import mcp as mcp_fast
+except ImportError:
+    mcp_fast = None  # type: ignore
+
 __all__ = [
     # Version
     "__version__",
@@ -77,4 +143,5 @@ __all__ = [
     "mcp_server",
     "mcp_run_server",
     "mcp_main",
+    "mcp_fast",
 ]
