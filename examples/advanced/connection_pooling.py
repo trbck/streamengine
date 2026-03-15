@@ -80,7 +80,8 @@ async def fast_consumer(record: Message):
     await asyncio.sleep(0.001)
 
     # The connection pool will reuse connections across all 5 concurrency tasks
-    print(f"[FastConsumer] Processed: {record.message.get('timestamp'):.2f}")
+    timestamp = record.message.get("timestamp", "0")
+    print(f"[FastConsumer] Processed: {timestamp}")
 
 
 # =============================================================================
