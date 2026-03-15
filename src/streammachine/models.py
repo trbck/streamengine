@@ -467,6 +467,11 @@ class AppConfig:
     debug: bool = False
     redis_url: str = REDIS_CONNECTION_STRING
     redis_max_connections: int = REDIS_MAX_CONNECTIONS
+    # Dashboard configuration
+    dashboard_enabled: bool = True
+    dashboard_port: int = 8000
+    dashboard_host: str = "localhost"
+    dashboard_refresh_interval: int = 5  # seconds
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
@@ -476,6 +481,10 @@ class AppConfig:
             raise ValueError("max_threads must be >= 1")
         if self.webserver_port < 1 or self.webserver_port > 65535:
             raise ValueError("webserver_port must be between 1 and 65535")
+        if self.dashboard_port < 1 or self.dashboard_port > 65535:
+            raise ValueError("dashboard_port must be between 1 and 65535")
+        if self.dashboard_refresh_interval < 1:
+            raise ValueError("dashboard_refresh_interval must be >= 1")
         if self.redis_max_connections < 1:
             raise ValueError("redis_max_connections must be >= 1")
 

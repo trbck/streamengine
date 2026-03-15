@@ -57,8 +57,12 @@ monitoring = [
 mcp = [
     "mcp>=1.0.0",
 ]
+dashboard = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+]
 all = [
-    "streammachine[dev,cython,fast-json,monitoring,mcp]",
+    "streammachine[dev,cython,fast-json,monitoring,mcp,dashboard]",
 ]
 
 [project.scripts]

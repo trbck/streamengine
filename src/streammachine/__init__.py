@@ -111,6 +111,22 @@ try:
 except ImportError:
     mcp_fast = None  # type: ignore
 
+# Dashboard (optional, requires FastAPI)
+try:
+    from .dashboard import (
+        DashboardManager,
+        start_dashboard,
+        stop_dashboard,
+        create_app,
+        get_dashboard_html,
+    )
+except ImportError:
+    DashboardManager = None  # type: ignore
+    start_dashboard = None  # type: ignore
+    stop_dashboard = None  # type: ignore
+    create_app = None  # type: ignore
+    get_dashboard_html = None  # type: ignore
+
 __all__ = [
     # Version
     "__version__",
@@ -144,4 +160,10 @@ __all__ = [
     "mcp_run_server",
     "mcp_main",
     "mcp_fast",
+    # Dashboard (optional)
+    "DashboardManager",
+    "start_dashboard",
+    "stop_dashboard",
+    "create_app",
+    "get_dashboard_html",
 ]

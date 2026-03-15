@@ -43,7 +43,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import socket
 import uuid
 import time
 import uvloop
@@ -104,6 +106,12 @@ class App:
         - Each StreamConsumer has its own RedisConnection
         - asyncio.Lock in Storage prevents concurrent writes to same key
 
+    Dashboard:
+        When dashboard_enabled=True (default), the first App instance to start
+        becomes the dashboard master and serves a web UI on the configured port.
+        Subsequent instances register themselves and skip dashboard startup.
+        The dashboard aggregates metrics from all registered instances.
+
     Example:
         Simple agent and timer::
 
@@ -132,6 +140,10 @@ class App:
         to_scan: Whether to scan for decorated tasks (default True)
         max_processes: Maximum number of process pool workers
         max_threads: Maximum number of thread pool workers
+        dashboard_enabled: Whether to enable the monitoring dashboard (default True)
+        dashboard_port: Port for the dashboard server (default 8000)
+        dashboard_host: Host for the dashboard server (default "localhost")
+        dashboard_refresh_interval: Heartbeat interval in seconds (default 5)
     """
 
     def __init__(
@@ -140,6 +152,10 @@ class App:
         to_scan: bool = True,
         max_processes: int = 5,
         max_threads: int = 5,
+        dashboard_enabled: bool = True,
+        dashboard_port: int = 8000,
+        dashboard_host: str = "localhost",
+        dashboard_refresh_interval: int = 5,
     ):
         """
         Initialize the StreamMachine application.
@@ -149,8 +165,21 @@ class App:
             to_scan: Whether to scan for decorated tasks
             max_processes: Maximum number of process pool workers
             max_threads: Maximum number of thread pool workers
+            dashboard_enabled: Whether to enable the monitoring dashboard
+            dashboard_port: Port for the dashboard server
+            dashboard_host: Host for the dashboard server
+            dashboard_refresh_interval: Heartbeat interval in seconds
         """
-        self.config = AppConfig(name, to_scan, max_processes, max_threads)
+        self.config = AppConfig(
+            name=name,
+            to_scan=to_scan,
+            max_processes=max_processes,
+            max_threads=max_threads,
+            dashboard_enabled=dashboard_enabled,
+            dashboard_port=dashboard_port,
+            dashboard_host=dashboard_host,
+            dashboard_refresh_interval=dashboard_refresh_interval,
+        )
         self.process_pool = ProcessPoolExecutor(max_workers=max_processes)
         self.thread_pool = ThreadPoolExecutor(max_workers=max_threads)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -162,6 +191,12 @@ class App:
         self.rc = RedisConnection()
         self.storage = storage.Storage()
         self._is_shutting_down = False
+
+        # Instance tracking for dashboard
+        self._instance_id: str = str(uuid.uuid4())[:8]
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._start_time: float = 0.0
+        self._dashboard_started: bool = False
 
     def _discover(self) -> None:
         """
@@ -277,13 +312,165 @@ class App:
         logger.info(f"Received signal {sig.name}, initiating graceful shutdown...")
         await self.shutdown()
 
+    async def _register_instance(self) -> None:
+        """
+        Register this App instance in shared Storage.
+
+        Stores instance metadata for dashboard aggregation.
+        """
+        instance_data = {
+            "instance_id": self._instance_id,
+            "name": self.config.name,
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "start_time": self._start_time,
+        }
+
+        instance_key = f"streammachine:instances:{self._instance_id}"
+        await self.storage.write(instance_key, instance_data)
+        logger.debug(f"Registered instance {self._instance_id} in storage")
+
+    async def _unregister_instance(self) -> None:
+        """Unregister this App instance from shared Storage."""
+        instance_key = f"streammachine:instances:{self._instance_id}"
+        await self.storage.delete(instance_key)
+
+        metrics_key = f"streammachine:metrics:{self._instance_id}"
+        await self.storage.delete(metrics_key)
+        logger.debug(f"Unregistered instance {self._instance_id} from storage")
+
+    async def _heartbeat_loop(self) -> None:
+        """
+        Periodically update heartbeat in Storage.
+
+        Updates instance metrics every dashboard_refresh_interval seconds
+        to indicate the instance is still alive and processing.
+        """
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=self.config.dashboard_refresh_interval
+                )
+                # If we get here, shutdown was requested
+                break
+            except asyncio.TimeoutError:
+                # Timeout means it's time to update heartbeat
+                pass
+
+            try:
+                metrics = await self._get_metrics()
+                metrics_key = f"streammachine:metrics:{self._instance_id}"
+                await self.storage.write(metrics_key, metrics)
+                logger.debug(f"Updated heartbeat for instance {self._instance_id}")
+            except Exception as e:
+                logger.error(f"Error updating heartbeat: {e}", exc_info=True)
+
+    async def _get_metrics(self) -> dict:
+        """
+        Return current metrics for this instance.
+
+        Gathers information about agents, timers, and active tasks.
+        """
+        agents = [
+            item for item in self.registry.registered
+            if item.decorator_type == "agent"
+        ]
+        timers = [
+            item for item in self.registry.registered
+            if item.decorator_type == "timer"
+        ]
+
+        # Build detailed info for dashboard
+        agents_detail = []
+        for agent in agents:
+            agent_info = {
+                "topic": agent.topic if isinstance(agent.topic, str) else list(agent.topic),
+                "group": agent.group,
+                "concurrency": agent.concurrency,
+                "processes": agent.processes,
+            }
+            agents_detail.append(agent_info)
+
+        timers_detail = []
+        for timer in timers:
+            timer_info = {
+                "name": timer.obj_name,
+                "interval": timer.t,
+            }
+            timers_detail.append(timer_info)
+
+        # Get stream info from agents
+        streams = set()
+        for agent in agents:
+            if isinstance(agent.topic, str):
+                streams.add(agent.topic)
+            elif isinstance(agent.topic, list):
+                streams.update(agent.topic)
+
+        return {
+            "instance_id": self._instance_id,
+            "agents": len(agents),
+            "timers": len(timers),
+            "active_tasks": len(self._running_tasks),
+            "last_heartbeat": time.time(),
+            "agents_detail": agents_detail,
+            "timers_detail": timers_detail,
+            "streams": list(streams),
+        }
+
+    async def _start_dashboard(self) -> None:
+        """
+        Start the dashboard if enabled and not already running.
+
+        Uses DashboardManager singleton for cross-process coordination.
+        """
+        if not self.config.dashboard_enabled:
+            return
+
+        try:
+            from .dashboard import start_dashboard
+            self._dashboard_started = await start_dashboard(
+                app_instance_id=self._instance_id,
+                port=self.config.dashboard_port,
+                host=self.config.dashboard_host,
+            )
+            if self._dashboard_started:
+                logger.info(
+                    f"Dashboard started on http://{self.config.dashboard_host}:{self.config.dashboard_port}"
+                )
+        except ImportError:
+            logger.warning(
+                "Dashboard enabled but FastAPI not installed. "
+                "Install with: pip install fastapi uvicorn"
+            )
+        except Exception as e:
+            logger.error(f"Failed to start dashboard: {e}", exc_info=True)
+
+    async def _stop_dashboard(self) -> None:
+        """Stop the dashboard if this instance is master."""
+        if not self._dashboard_started:
+            return
+
+        try:
+            from .dashboard import stop_dashboard
+            await stop_dashboard()
+            logger.info("Dashboard stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping dashboard: {e}")
+
     def start(self) -> None:
         """
         Start the application event loop.
 
         This is the main entry point that discovers tasks, sets up signal handlers,
         and runs the event loop until shutdown is requested.
+
+        If dashboard_enabled is True (default), the first App instance to start
+        will host the dashboard. Subsequent instances will register themselves
+        and skip dashboard startup.
         """
+        self._start_time = time.time()
         self._discover()
         agents = self._get_concurrent_agents()
         timers = self._get_timers()
@@ -299,6 +486,15 @@ class App:
         all_coros.extend(timers)
         all_coros.extend(agents)
         all_coros.append(self.storage.start())
+
+        # Register instance and start heartbeat for dashboard
+        all_coros.append(self._register_instance())
+        self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+        self._running_tasks.add(self._heartbeat_task)
+        self._heartbeat_task.add_done_callback(self._running_tasks.discard)
+
+        # Start dashboard if enabled
+        all_coros.append(self._start_dashboard())
 
         for coro in all_coros:
             task = asyncio.ensure_future(coro)
@@ -378,11 +574,13 @@ class App:
 
         This method implements a graceful shutdown sequence:
         1. Set shutdown event to signal timers to stop
-        2. Cancel all pending asyncio tasks
-        3. Wait up to 10 seconds for tasks to complete
-        4. Close Redis connection pool
-        5. Terminate storage manager process
-        6. Stop the event loop
+        2. Stop dashboard if this instance is master
+        3. Unregister instance from dashboard
+        4. Cancel all pending asyncio tasks
+        5. Wait up to 10 seconds for tasks to complete
+        6. Close Redis connection pool
+        7. Terminate storage manager process
+        8. Stop the event loop
 
         The 10-second timeout ensures the app doesn't hang indefinitely
         if a task is stuck. Tasks that don't complete in time are logged
@@ -393,6 +591,23 @@ class App:
         """
         self._shutdown_event.set()
         logger.info("Shutting down...")
+
+        # Stop dashboard if this instance is master
+        await self._stop_dashboard()
+
+        # Unregister instance from dashboard
+        try:
+            await self._unregister_instance()
+        except Exception as e:
+            logger.warning(f"Error unregistering instance: {e}")
+
+        # Cancel heartbeat task
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
         # Get all tasks except current
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
