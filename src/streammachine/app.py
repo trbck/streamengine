@@ -314,38 +314,50 @@ class App:
 
     async def _register_instance(self) -> None:
         """
-        Register this App instance in shared Storage.
+        Register this App instance in Redis for dashboard aggregation.
 
-        Stores instance metadata for dashboard aggregation.
+        Uses Redis directly (not Storage) so independently started processes
+        can see each other's instances.
         """
-        instance_data = {
-            "instance_id": self._instance_id,
-            "name": self.config.name,
-            "pid": os.getpid(),
-            "host": socket.gethostname(),
-            "start_time": self._start_time,
-        }
+        if not self.config.dashboard_enabled:
+            return
 
-        instance_key = f"streammachine:instances:{self._instance_id}"
-        await self.storage.write(instance_key, instance_data)
-        logger.debug(f"Registered instance {self._instance_id} in storage")
+        try:
+            from .dashboard import register_instance
+            await self.rc._ensure_pool()
+            await register_instance(
+                self.rc.client,
+                self._instance_id,
+                self.config.name,
+                os.getpid(),
+                socket.gethostname(),
+                self._start_time
+            )
+        except Exception as e:
+            logger.warning(f"Failed to register instance for dashboard: {e}")
 
     async def _unregister_instance(self) -> None:
-        """Unregister this App instance from shared Storage."""
-        instance_key = f"streammachine:instances:{self._instance_id}"
-        await self.storage.delete(instance_key)
+        """Unregister this App instance from Redis."""
+        if not self.config.dashboard_enabled:
+            return
 
-        metrics_key = f"streammachine:metrics:{self._instance_id}"
-        await self.storage.delete(metrics_key)
-        logger.debug(f"Unregistered instance {self._instance_id} from storage")
+        try:
+            from .dashboard import unregister_instance
+            await unregister_instance(self.rc.client, self._instance_id)
+        except Exception as e:
+            logger.warning(f"Failed to unregister instance from dashboard: {e}")
 
     async def _heartbeat_loop(self) -> None:
         """
-        Periodically update heartbeat in Storage.
+        Periodically update heartbeat in Redis.
 
         Updates instance metrics every dashboard_refresh_interval seconds
         to indicate the instance is still alive and processing.
+        Only runs when dashboard is enabled.
         """
+        if not self.config.dashboard_enabled:
+            return
+
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
@@ -360,8 +372,9 @@ class App:
 
             try:
                 metrics = await self._get_metrics()
-                metrics_key = f"streammachine:metrics:{self._instance_id}"
-                await self.storage.write(metrics_key, metrics)
+                from .dashboard import update_heartbeat
+                await self.rc._ensure_pool()
+                await update_heartbeat(self.rc.client, self._instance_id, metrics)
                 logger.debug(f"Updated heartbeat for instance {self._instance_id}")
             except Exception as e:
                 logger.error(f"Error updating heartbeat: {e}", exc_info=True)
@@ -487,14 +500,15 @@ class App:
         all_coros.extend(agents)
         all_coros.append(self.storage.start())
 
-        # Register instance and start heartbeat for dashboard
-        all_coros.append(self._register_instance())
-        self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
-        self._running_tasks.add(self._heartbeat_task)
-        self._heartbeat_task.add_done_callback(self._running_tasks.discard)
+        # Register instance and start heartbeat for dashboard (only if enabled)
+        if self.config.dashboard_enabled:
+            all_coros.append(self._register_instance())
+            self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+            self._running_tasks.add(self._heartbeat_task)
+            self._heartbeat_task.add_done_callback(self._running_tasks.discard)
 
-        # Start dashboard if enabled
-        all_coros.append(self._start_dashboard())
+            # Start dashboard if this instance becomes master
+            all_coros.append(self._start_dashboard())
 
         for coro in all_coros:
             task = asyncio.ensure_future(coro)

@@ -5,35 +5,37 @@ FastAPI dashboard for monitoring StreamMachine tasks across multiple
 running App instances. Uses Redis-based distributed locking for singleton
 dashboard pattern.
 
-Why Redis lock for singleton?
-    - Works across containers, processes, and machines
-    - Automatic cleanup via TTL if process crashes
-    - Platform-independent (unlike file locks)
+Why Redis for state storage?
+    - Storage uses multiprocessing.Manager which is per-process
+    - Independently started App processes cannot share Storage
+    - Redis is already required and provides true cross-process visibility
+
+Why ownership-safe locks?
+    - Simple SETNX + EXPIRE allows stale masters after TTL expiry
+    - Compare-and-set with Lua ensures only the lock owner can release/renew
+    - Prevents split-brain when a dead master's TTL expires
 
 Architecture:
     - DashboardManager: Singleton pattern with Redis distributed lock
-    - Each App instance registers itself in Storage with heartbeat
-    - Dashboard aggregates metrics from all registered instances
+    - Each App instance registers itself in Redis with heartbeat
+    - Dashboard aggregates metrics from all registered instances via Redis
     - First started file becomes dashboard master
     - Subsequent files detect existing dashboard and skip startup
 
-Example:
-    # In agent_file_a.py
-    app = App(name="agent_a", dashboard_enabled=True)
-    app.start()  # Dashboard starts on port 8000 (becomes master)
-
-    # In agent_file_b.py
-    app = App(name="agent_b", dashboard_enabled=True)
-    app.start()  # Dashboard already running, skips startup
+Lock Safety:
+    - Lock value includes unique token (instance_id:pid:timestamp)
+    - Renewal compares token before extending TTL
+    - Release compares token before deleting
+    - Uses Lua scripts for atomic compare-and-set operations
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
 import time
-import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
@@ -41,16 +43,25 @@ logger = logging.getLogger(__name__)
 
 # FastAPI/uvicorn imports (optional dependency)
 try:
-    from fastapi import FastAPI, Response
+    from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
     import uvicorn
     _HAS_FASTAPI = True
 except ImportError:
     FastAPI = None
-    Response = None
     HTMLResponse = None
     uvicorn = None
     _HAS_FASTAPI = False
+
+# coredis imports for Redis operations
+try:
+    import coredis
+    from coredis import PureToken
+    _HAS_COREDIS = True
+except ImportError:
+    coredis = None
+    PureToken = None
+    _HAS_COREDIS = False
 
 
 # Redis key prefixes for dashboard
@@ -58,11 +69,31 @@ INSTANCES_KEY_PREFIX = "streammachine:instances:"
 METRICS_KEY_PREFIX = "streammachine:metrics:"
 MASTER_KEY = "streammachine:dashboard:master"
 LOCK_KEY = "streammachine:dashboard:lock"
-HEARTBEAT_KEY = "streammachine:dashboard:heartbeat"
 
 # Lock TTL in seconds
 LOCK_TTL = 30
 HEARTBEAT_INTERVAL = 10
+INSTANCE_TTL = 60  # Instance data expires after 60s without heartbeat
+
+# Lua scripts for safe lock operations
+# These ensure atomicity - only the lock owner can renew or release
+RENEW_LOCK_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("EXPIRE", KEYS[1], ARGV[2])
+    return 1
+else
+    return 0
+end
+"""
+
+RELEASE_LOCK_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("DEL", KEYS[1])
+    return 1
+else
+    return 0
+end
+"""
 
 
 @dataclass
@@ -98,16 +129,21 @@ class DashboardManager:
     Uses Redis SETNX (SET if Not eXists) for atomic lock acquisition, ensuring
     only one dashboard instance runs across multiple processes/machines.
 
+    Lock Safety:
+        - Lock value includes unique token that identifies the owner
+        - Renewal uses Lua script to compare token before extending TTL
+        - Release uses Lua script to compare token before deleting
+        - This prevents stale masters from interfering with new masters
+
     Thread Safety:
         - Uses threading.Lock for in-process thread safety
         - Uses Redis SETNX for cross-process/machine coordination
-        - Heartbeat task auto-renews the lock
 
     Attributes:
         _instance: Singleton instance
         _lock: Thread lock for singleton pattern
-        _master_info: Info about current master (if this instance is master)
-        _server_task: uvicorn server task
+        _lock_token: Unique token for this master (used for safe release)
+        _server: uvicorn.Server instance (kept for graceful shutdown)
         _heartbeat_task: Task for renewing lock and heartbeat
     """
 
@@ -131,13 +167,17 @@ class DashboardManager:
 
         self._is_master = False
         self._master_info: Optional[Dict[str, Any]] = None
+        self._server: Optional[uvicorn.Server] = None
         self._server_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
         self._app_instance_id: Optional[str] = None
+        self._lock_token: Optional[str] = None  # Unique token for ownership
         self._redis = None
         self._port: int = 8000
         self._host: str = "localhost"
+        self._renew_script_sha: Optional[str] = None
+        self._release_script_sha: Optional[str] = None
         self._initialized = True
         logger.debug("DashboardManager initialized")
 
@@ -148,6 +188,16 @@ class DashboardManager:
             self._redis = RedisConnection()
             await self._redis._ensure_pool()
         return self._redis
+
+    async def _load_scripts(self, client) -> None:
+        """Load Lua scripts into Redis for fast execution."""
+        if self._renew_script_sha is not None:
+            return
+
+        # Load renew script
+        self._renew_script_sha = await client.script_load(RENEW_LOCK_SCRIPT)
+        self._release_script_sha = await client.script_load(RELEASE_LOCK_SCRIPT)
+        logger.debug("Loaded lock safety scripts into Redis")
 
     async def try_become_master(self, port: int, host: str, app_instance_id: str) -> bool:
         """
@@ -166,18 +216,29 @@ class DashboardManager:
             redis = await self._get_redis()
             client = redis.client
 
-            # Try to acquire lock with TTL
-            # SET key value NX EX ttl
-            lock_value = f"{app_instance_id}:{os.getpid()}:{time.time()}"
+            # Generate unique lock token for ownership verification
+            self._lock_token = f"{app_instance_id}:{os.getpid()}:{time.time()}"
 
-            acquired = await client.set(
-                LOCK_KEY,
-                lock_value,
-                nx=True,  # Only set if not exists
-                ex=LOCK_TTL  # Expire after LOCK_TTL seconds
-            )
+            # Try to acquire lock with TTL
+            if _HAS_COREDIS:
+                acquired = await client.set(
+                    LOCK_KEY,
+                    self._lock_token,
+                    condition=PureToken.NX,
+                    ex=LOCK_TTL
+                )
+            else:
+                acquired = await client.set(
+                    LOCK_KEY,
+                    self._lock_token,
+                    nx=True,
+                    ex=LOCK_TTL
+                )
 
             if acquired:
+                # Load Lua scripts for safe lock operations
+                await self._load_scripts(client)
+
                 self._is_master = True
                 self._app_instance_id = app_instance_id
                 self._port = port
@@ -187,40 +248,63 @@ class DashboardManager:
                     "port": port,
                     "host": host,
                     "started_at": time.time(),
-                    "pid": os.getpid()
+                    "pid": os.getpid(),
+                    "lock_token": self._lock_token
                 }
 
                 # Store master info in Redis for other instances to query
-                await client.set(MASTER_KEY, str(self._master_info))
+                await client.set(MASTER_KEY, json.dumps(self._master_info))
 
                 logger.info(f"DashboardManager became master on {host}:{port}")
                 return True
             else:
+                self._lock_token = None
                 logger.info("Dashboard already running, skipping startup")
                 return False
 
         except Exception as e:
             logger.error(f"Failed to acquire dashboard lock: {e}")
+            self._lock_token = None
             return False
 
     async def release_lock(self) -> None:
-        """Release the master lock and clean up."""
-        if not self._is_master:
+        """Release the master lock safely using compare-and-delete."""
+        if not self._is_master or not self._lock_token:
             return
 
         try:
             redis = await self._get_redis()
             client = redis.client
 
-            # Delete lock and master info
-            await client.delete(LOCK_KEY)
+            # Use Lua script for safe release - only delete if we own it
+            if self._release_script_sha and _HAS_COREDIS:
+                result = await client.evalsha(
+                    self._release_script_sha,
+                    keys=[LOCK_KEY],
+                    args=[self._lock_token]
+                )
+                if result:
+                    logger.info("Released dashboard lock (owned)")
+                else:
+                    logger.warning("Could not release lock - not owner or already released")
+            else:
+                # Fallback: check then delete (not atomic but better than nothing)
+                current = await client.get(LOCK_KEY)
+                if current and current.decode() == self._lock_token:
+                    await client.delete(LOCK_KEY)
+                    logger.info("Released dashboard lock")
+                else:
+                    logger.warning("Lock ownership lost or changed")
+
+            # Clean up master info
             await client.delete(MASTER_KEY)
-            logger.info("Released dashboard lock")
+
         except Exception as e:
             logger.warning(f"Error releasing dashboard lock: {e}")
         finally:
             self._is_master = False
             self._master_info = None
+            self._lock_token = None
 
     async def _heartbeat_loop(self) -> None:
         """Renew lock TTL and update heartbeat periodically."""
@@ -228,19 +312,30 @@ class DashboardManager:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
 
-                if self._is_master:
-                    # Renew lock TTL
+                if self._is_master and self._lock_token:
                     redis = await self._get_redis()
                     client = redis.client
 
-                    await client.expire(LOCK_KEY, LOCK_TTL)
-
-                    # Update heartbeat
-                    await client.set(
-                        HEARTBEAT_KEY,
-                        str({"instance_id": self._app_instance_id, "time": time.time()}),
-                        ex=LOCK_TTL * 2
-                    )
+                    # Use Lua script for safe renewal - only extend if we own it
+                    if self._renew_script_sha and _HAS_COREDIS:
+                        result = await client.evalsha(
+                            self._renew_script_sha,
+                            keys=[LOCK_KEY],
+                            args=[self._lock_token, LOCK_TTL]
+                        )
+                        if not result:
+                            logger.warning("Lock ownership lost during renewal")
+                            self._is_master = False
+                            self._lock_token = None
+                    else:
+                        # Fallback: check then expire (not atomic)
+                        current = await client.get(LOCK_KEY)
+                        if current and current.decode() == self._lock_token:
+                            await client.expire(LOCK_KEY, LOCK_TTL)
+                        else:
+                            logger.warning("Lock ownership lost")
+                            self._is_master = False
+                            self._lock_token = None
 
                     logger.debug("Dashboard heartbeat renewed")
 
@@ -272,7 +367,7 @@ class DashboardManager:
         # Start heartbeat task
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-        # Start uvicorn server
+        # Start uvicorn server - keep reference for proper shutdown
         config = uvicorn.Config(
             app,
             host=self._host,
@@ -280,14 +375,19 @@ class DashboardManager:
             log_level="warning",
             access_log=False
         )
-        server = uvicorn.Server(config)
+        self._server = uvicorn.Server(config)
 
-        self._server_task = asyncio.create_task(server.serve())
+        self._server_task = asyncio.create_task(self._server.serve())
         logger.info(f"Dashboard started on http://{self._host}:{self._port}")
 
     async def stop_server(self) -> None:
         """Graceful shutdown and cleanup."""
         self._shutdown_event.set()
+
+        # Signal uvicorn to shutdown gracefully
+        if self._server is not None:
+            self._server.should_exit = True
+            logger.debug("Signaled uvicorn server to shutdown")
 
         # Cancel heartbeat task
         if self._heartbeat_task and not self._heartbeat_task.done():
@@ -297,7 +397,15 @@ class DashboardManager:
             except asyncio.CancelledError:
                 pass
 
-        # Release lock
+        # Wait for server task to finish (with timeout)
+        if self._server_task and not self._server_task.done():
+            try:
+                await asyncio.wait_for(self._server_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Server shutdown timed out, cancelling")
+                self._server_task.cancel()
+
+        # Release lock after server is stopped
         await self.release_lock()
 
         logger.info("Dashboard stopped")
@@ -360,14 +468,69 @@ def create_app() -> 'FastAPI':
     return app
 
 
-# API endpoint implementations
+# API endpoint implementations - All use Redis directly for cross-process visibility
+
+async def _get_redis_client():
+    """Get Redis client for direct operations."""
+    from .redisapi import RedisConnection
+    redis = RedisConnection()
+    await redis._ensure_pool()
+    return redis.client
+
+
+async def _get_all_instances_from_redis(client) -> List[Dict[str, Any]]:
+    """Get all registered instances from Redis using SCAN."""
+    instances = []
+
+    # Use SCAN to find all instance keys
+    cursor = 0
+    while True:
+        if _HAS_COREDIS:
+            result = await client.scan(cursor, match=f"{INSTANCES_KEY_PREFIX}*", count=100)
+        else:
+            result = await client.scan(cursor, match=f"{INSTANCES_KEY_PREFIX}*", count=100)
+
+        cursor = result[0] if isinstance(result, tuple) else result.cursor
+        keys = result[1] if isinstance(result, tuple) else result.keys
+
+        for key in keys:
+            try:
+                data = await client.get(key)
+                if data:
+                    # Decode if bytes
+                    if isinstance(data, bytes):
+                        data = data.decode('utf-8')
+                    # Parse JSON
+                    instances.append(json.loads(data))
+            except Exception as e:
+                logger.warning(f"Error reading instance {key}: {e}")
+
+        # Check if scan is complete
+        if _HAS_COREDIS:
+            if cursor == 0:
+                break
+        else:
+            if not cursor or cursor == b'0':
+                break
+
+    return instances
+
+
+async def _get_metrics_from_redis(client, instance_id: str) -> Optional[Dict[str, Any]]:
+    """Get metrics for an instance from Redis."""
+    metrics_key = f"{METRICS_KEY_PREFIX}{instance_id}"
+    data = await client.get(metrics_key)
+    if data:
+        if isinstance(data, bytes):
+            data = data.decode('utf-8')
+        return json.loads(data)
+    return None
+
 
 async def get_aggregated_health() -> Dict[str, Any]:
     """Get aggregated health from all registered instances."""
-    from .storage import Storage
-
-    storage = Storage()
-    instances = await _get_all_instances_from_storage(storage)
+    client = await _get_redis_client()
+    instances = await _get_all_instances_from_redis(client)
 
     total_agents = 0
     total_timers = 0
@@ -378,7 +541,7 @@ async def get_aggregated_health() -> Dict[str, Any]:
     instance_health = []
 
     for inst in instances:
-        metrics = await _get_metrics_from_storage(storage, inst["instance_id"])
+        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
 
         # Check if heartbeat is recent (within 30 seconds)
         is_healthy = (
@@ -394,8 +557,8 @@ async def get_aggregated_health() -> Dict[str, Any]:
         total_tasks += metrics.get("active_tasks", 0) if metrics else 0
 
         instance_health.append({
-            "instance_id": inst["instance_id"],
-            "name": inst["name"],
+            "instance_id": inst.get("instance_id", ""),
+            "name": inst.get("name", "unknown"),
             "healthy": is_healthy,
             "metrics": metrics
         })
@@ -413,16 +576,14 @@ async def get_aggregated_health() -> Dict[str, Any]:
 
 async def get_all_instances() -> List[Dict[str, Any]]:
     """List all registered App instances."""
-    from .storage import Storage
-
-    storage = Storage()
-    instances = await _get_all_instances_from_storage(storage)
+    client = await _get_redis_client()
+    instances = await _get_all_instances_from_redis(client)
 
     result = []
     now = time.time()
 
     for inst in instances:
-        metrics = await _get_metrics_from_storage(storage, inst["instance_id"])
+        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
         is_active = (
             metrics and
             (now - metrics.get("last_heartbeat", 0)) < 30
@@ -439,16 +600,18 @@ async def get_all_instances() -> List[Dict[str, Any]]:
 
 async def get_instance_detail(instance_id: str) -> Dict[str, Any]:
     """Get details for a specific instance."""
-    from .storage import Storage
-
-    storage = Storage()
+    client = await _get_redis_client()
     instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
-    instance_data = await storage.read(instance_key)
 
-    if not instance_data:
+    data = await client.get(instance_key)
+    if not data:
         return {"error": "Instance not found", "instance_id": instance_id}
 
-    metrics = await _get_metrics_from_storage(storage, instance_id)
+    if isinstance(data, bytes):
+        data = data.decode('utf-8')
+    instance_data = json.loads(data)
+
+    metrics = await _get_metrics_from_redis(client, instance_id)
 
     return {
         "instance": instance_data,
@@ -458,20 +621,18 @@ async def get_instance_detail(instance_id: str) -> Dict[str, Any]:
 
 async def get_all_agents() -> List[Dict[str, Any]]:
     """Get all registered agents across instances."""
-    from .storage import Storage
-
-    storage = Storage()
-    instances = await _get_all_instances_from_storage(storage)
+    client = await _get_redis_client()
+    instances = await _get_all_instances_from_redis(client)
 
     agents = []
     for inst in instances:
-        metrics = await _get_metrics_from_storage(storage, inst["instance_id"])
+        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
         if metrics and "agents_detail" in metrics:
             for agent in metrics.get("agents_detail", []):
                 agents.append({
                     **agent,
-                    "instance_id": inst["instance_id"],
-                    "instance_name": inst["name"]
+                    "instance_id": inst.get("instance_id", ""),
+                    "instance_name": inst.get("name", "unknown")
                 })
 
     return agents
@@ -479,20 +640,18 @@ async def get_all_agents() -> List[Dict[str, Any]]:
 
 async def get_all_timers() -> List[Dict[str, Any]]:
     """Get all registered timers across instances."""
-    from .storage import Storage
-
-    storage = Storage()
-    instances = await _get_all_instances_from_storage(storage)
+    client = await _get_redis_client()
+    instances = await _get_all_instances_from_redis(client)
 
     timers = []
     for inst in instances:
-        metrics = await _get_metrics_from_storage(storage, inst["instance_id"])
+        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
         if metrics and "timers_detail" in metrics:
             for timer in metrics.get("timers_detail", []):
                 timers.append({
                     **timer,
-                    "instance_id": inst["instance_id"],
-                    "instance_name": inst["name"]
+                    "instance_id": inst.get("instance_id", ""),
+                    "instance_name": inst.get("name", "unknown")
                 })
 
     return timers
@@ -500,86 +659,66 @@ async def get_all_timers() -> List[Dict[str, Any]]:
 
 async def get_storage_contents() -> Dict[str, Any]:
     """Get storage contents (keys only for safety)."""
-    from .storage import Storage
+    client = await _get_redis_client()
 
-    storage = Storage()
-    keys = await storage.keys()
+    # Use SCAN to find all streammachine keys
+    keys = []
+    cursor = 0
+    while True:
+        if _HAS_COREDIS:
+            result = await client.scan(cursor, match="streammachine:*", count=100)
+        else:
+            result = await client.scan(cursor, match="streammachine:*", count=100)
 
-    # Filter to dashboard-related keys only
-    dashboard_keys = [k for k in keys if k.startswith("streammachine:")]
+        cursor = result[0] if isinstance(result, tuple) else result.cursor
+        scan_keys = result[1] if isinstance(result, tuple) else result.keys
+        keys.extend(scan_keys)
 
+        if _HAS_COREDIS:
+            if cursor == 0:
+                break
+        else:
+            if not cursor or cursor == b'0':
+                break
+
+    # Decode keys and fetch values
     result = {}
-    for key in dashboard_keys[:100]:  # Limit to 100 keys
+    for key in keys[:100]:  # Limit to 100 keys
         try:
-            value = await storage.read(key)
-            result[key] = value
+            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+            data = await client.get(key)
+            if data:
+                if isinstance(data, bytes):
+                    data = data.decode('utf-8')
+                result[key_str] = data
         except Exception as e:
-            result[key] = f"Error reading: {e}"
+            result[key_str if 'key_str' in dir() else key] = f"Error reading: {e}"
 
     return {
         "total_keys": len(keys),
-        "dashboard_keys": len(dashboard_keys),
         "contents": result
     }
 
 
 async def get_stream_info() -> List[Dict[str, Any]]:
     """Get Redis stream information."""
-    from .redisapi import RedisConnection
+    client = await _get_redis_client()
 
-    try:
-        redis = RedisConnection()
-        await redis._ensure_pool()
-        client = redis.client
+    # Get stream info from registered instances
+    instances = await _get_all_instances_from_redis(client)
+    streams = []
 
-        # Get all stream keys
-        # Note: This requires SCAN which coredis supports
-        streams = []
+    for inst in instances:
+        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+        if metrics and "streams" in metrics:
+            for stream in metrics.get("streams", []):
+                streams.append({
+                    "name": stream,
+                    "instance_id": inst.get("instance_id", ""),
+                    "instance_name": inst.get("name", "unknown")
+                })
 
-        # Try to get stream info from storage if available
-        from .storage import Storage
-        storage = Storage()
-        instances = await _get_all_instances_from_storage(storage)
-
-        for inst in instances:
-            metrics = await _get_metrics_from_storage(storage, inst["instance_id"])
-            if metrics and "streams" in metrics:
-                for stream in metrics.get("streams", []):
-                    streams.append({
-                        "name": stream,
-                        "instance_id": inst["instance_id"],
-                        "instance_name": inst["name"]
-                    })
-
-        return streams
-    except Exception as e:
-        logger.error(f"Error getting stream info: {e}")
-        return []
-
-
-# Helper functions
-
-async def _get_all_instances_from_storage(storage) -> List[Dict[str, Any]]:
-    """Get all registered instances from storage."""
-    keys = await storage.keys()
-    instance_keys = [k for k in keys if k.startswith(INSTANCES_KEY_PREFIX)]
-
-    instances = []
-    for key in instance_keys:
-        try:
-            data = await storage.read(key)
-            if data:
-                instances.append(data)
-        except Exception as e:
-            logger.warning(f"Error reading instance {key}: {e}")
-
-    return instances
-
-
-async def _get_metrics_from_storage(storage, instance_id: str) -> Optional[Dict[str, Any]]:
-    """Get metrics for an instance from storage."""
-    metrics_key = f"{METRICS_KEY_PREFIX}{instance_id}"
-    return await storage.read(metrics_key)
+    return streams
 
 
 def get_dashboard_html() -> str:
@@ -857,6 +996,62 @@ async def stop_dashboard() -> None:
     await manager.stop_server()
 
 
+# Helper functions for instance registration (used by App)
+
+async def register_instance(redis_client, instance_id: str, name: str, pid: int, host: str, start_time: float) -> None:
+    """
+    Register an App instance in Redis.
+
+    Args:
+        redis_client: Redis client (from RedisConnection)
+        instance_id: Unique instance identifier
+        name: Application name
+        pid: Process ID
+        host: Hostname
+        start_time: Start timestamp
+    """
+    instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
+    instance_data = {
+        "instance_id": instance_id,
+        "name": name,
+        "pid": pid,
+        "host": host,
+        "start_time": start_time,
+    }
+    # Set with expiry so stale instances are cleaned up
+    await redis_client.set(instance_key, json.dumps(instance_data), ex=INSTANCE_TTL * 2)
+    logger.debug(f"Registered instance {instance_id} in Redis")
+
+
+async def unregister_instance(redis_client, instance_id: str) -> None:
+    """Unregister an App instance from Redis."""
+    instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
+    metrics_key = f"{METRICS_KEY_PREFIX}{instance_id}"
+    await redis_client.delete(instance_key)
+    await redis_client.delete(metrics_key)
+    logger.debug(f"Unregistered instance {instance_id} from Redis")
+
+
+async def update_heartbeat(redis_client, instance_id: str, metrics: Dict[str, Any]) -> None:
+    """
+    Update heartbeat and metrics for an instance.
+
+    Args:
+        redis_client: Redis client
+        instance_id: Unique instance identifier
+        metrics: Metrics dictionary (agents, timers, etc.)
+    """
+    metrics_key = f"{METRICS_KEY_PREFIX}{instance_id}"
+    metrics["last_heartbeat"] = time.time()
+
+    # Refresh instance key expiry as well
+    instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
+    await redis_client.expire(instance_key, INSTANCE_TTL * 2)
+
+    # Set metrics with expiry
+    await redis_client.set(metrics_key, json.dumps(metrics), ex=INSTANCE_TTL * 2)
+
+
 # Public API
 __all__ = [
     "DashboardManager",
@@ -866,4 +1061,7 @@ __all__ = [
     "stop_dashboard",
     "create_app",
     "get_dashboard_html",
+    "register_instance",
+    "unregister_instance",
+    "update_heartbeat",
 ]

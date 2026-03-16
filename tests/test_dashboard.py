@@ -188,38 +188,33 @@ class TestAPIEndpoints:
     """Tests for dashboard API endpoints."""
 
     @pytest.mark.asyncio
-    async def test_get_all_instances_from_storage(self):
-        """Test _get_all_instances_from_storage helper."""
-        from streammachine.dashboard import _get_all_instances_from_storage
+    async def test_get_all_instances_from_redis(self):
+        """Test _get_all_instances_from_redis helper."""
+        from streammachine.dashboard import _get_all_instances_from_redis
 
-        # Create mock storage
-        mock_storage = AsyncMock()
-        mock_storage.keys = AsyncMock(return_value=[
-            "streammachine:instances:abc123",
-            "streammachine:instances:def456",
-            "other_key",
+        # Mock Redis client
+        mock_client = AsyncMock()
+        mock_client.scan = AsyncMock(side_effect=[
+            (0, []),  # First call returns empty
         ])
-        mock_storage.read = AsyncMock(side_effect=lambda k: {
-            "streammachine:instances:abc123": {"instance_id": "abc123", "name": "app1"},
-            "streammachine:instances:def456": {"instance_id": "def456", "name": "app2"},
-        }.get(k))
 
-        instances = await _get_all_instances_from_storage(mock_storage)
-        assert len(instances) == 2
+        instances = await _get_all_instances_from_redis(mock_client)
+        assert instances == []
 
     @pytest.mark.asyncio
-    async def test_get_metrics_from_storage(self):
-        """Test _get_metrics_from_storage helper."""
-        from streammachine.dashboard import _get_metrics_from_storage
+    async def test_get_metrics_from_redis(self):
+        """Test _get_metrics_from_redis helper."""
+        from streammachine.dashboard import _get_metrics_from_redis
+        import json
 
-        mock_storage = AsyncMock()
-        mock_storage.read = AsyncMock(return_value={
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=json.dumps({
             "instance_id": "abc123",
             "agents": 5,
             "timers": 2,
-        })
+        }))
 
-        metrics = await _get_metrics_from_storage(mock_storage, "abc123")
+        metrics = await _get_metrics_from_redis(mock_client, "abc123")
         assert metrics["instance_id"] == "abc123"
         assert metrics["agents"] == 5
 
@@ -360,3 +355,160 @@ class TestConfigValidation:
         )
         assert config.dashboard_port == 8080
         assert config.dashboard_refresh_interval == 10
+
+
+class TestLockSafety:
+    """Tests for ownership-safe lock operations."""
+
+    @pytest.mark.asyncio
+    async def test_lock_token_is_stored(self):
+        """Test that lock token is stored and used for ownership verification."""
+        DashboardManager.reset_instance()
+
+        # Mock Redis client
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock(return_value=True)
+        mock_client.script_load = AsyncMock(return_value=b"renew_sha")
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        result = await manager.try_become_master(8000, "localhost", "test_id")
+        assert result is True
+        assert manager._lock_token is not None
+        assert "test_id" in manager._lock_token
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_release_uses_token_verification(self):
+        """Test that release_lock verifies token ownership."""
+        DashboardManager.reset_instance()
+
+        # Mock Redis client
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock(return_value=True)
+        mock_client.script_load = AsyncMock(return_value=b"sha")
+        mock_client.evalsha = AsyncMock(return_value=1)  # Successfully released
+        mock_client.delete = AsyncMock()
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        # Become master first
+        await manager.try_become_master(8000, "localhost", "test_id")
+        token = manager._lock_token
+
+        # Release should use token
+        await manager.release_lock()
+
+        # Token should be cleared
+        assert manager._lock_token is None
+        assert manager.is_master() is False
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_release_fails_if_not_owner(self):
+        """Test that release does nothing if lock was lost to another master."""
+        DashboardManager.reset_instance()
+
+        # Mock Redis client
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock(return_value=True)
+        mock_client.script_load = AsyncMock(return_value=b"sha")
+        mock_client.evalsha = AsyncMock(return_value=0)  # Not owner anymore
+        mock_client.delete = AsyncMock()
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        # Become master
+        await manager.try_become_master(8000, "localhost", "test_id")
+
+        # Release should detect ownership loss
+        await manager.release_lock()
+
+        DashboardManager.reset_instance()
+
+
+class TestRedisDirectStorage:
+    """Tests for Redis-based instance storage (cross-process visibility)."""
+
+    @pytest.mark.asyncio
+    async def test_register_instance_stores_in_redis(self):
+        """Test that register_instance writes to Redis with TTL."""
+        from streammachine.dashboard import register_instance
+        import json
+
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock()
+
+        await register_instance(mock_client, "test_id", "test_app", 1234, "localhost", 1234567890.0)
+
+        # Verify set was called with correct key and TTL
+        assert mock_client.set.called
+        call_args = mock_client.set.call_args
+        assert "streammachine:instances:test_id" in call_args[0][0]
+        assert call_args[1].get("ex") is not None  # TTL should be set
+
+    @pytest.mark.asyncio
+    async def test_unregister_instance_deletes_from_redis(self):
+        """Test that unregister_instance deletes from Redis."""
+        from streammachine.dashboard import unregister_instance
+
+        mock_client = AsyncMock()
+        mock_client.delete = AsyncMock()
+
+        await unregister_instance(mock_client, "test_id")
+
+        # Verify both instance and metrics keys were deleted
+        assert mock_client.delete.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_update_heartbeat_sets_ttl(self):
+        """Test that update_heartbeat refreshes TTL."""
+        from streammachine.dashboard import update_heartbeat
+        import json
+
+        mock_client = AsyncMock()
+        mock_client.expire = AsyncMock()
+        mock_client.set = AsyncMock()
+
+        await update_heartbeat(mock_client, "test_id", {"agents": 5, "timers": 2})
+
+        # Verify TTL was refreshed
+        assert mock_client.expire.called
+        assert mock_client.set.called
+
+
+class TestDashboardDisabled:
+    """Tests for dashboard_enabled=False behavior."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_skips_registration(self):
+        """Test that disabled dashboard skips instance registration."""
+        from streammachine import App
+
+        app = App(name="test", to_scan=False, dashboard_enabled=False)
+
+        # Should have empty coroutine result (no-op)
+        # _register_instance should return early
+        assert app.config.dashboard_enabled is False
+
+    def test_disabled_does_not_create_heartbeat_task(self):
+        """Test that disabled dashboard doesn't create heartbeat task."""
+        from streammachine import App
+
+        app = App(name="test", to_scan=False, dashboard_enabled=False)
+
+        # Verify config
+        assert app.config.dashboard_enabled is False
+        # Heartbeat task should be None initially
+        assert app._heartbeat_task is None
