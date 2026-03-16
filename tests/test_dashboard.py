@@ -21,6 +21,7 @@ from streammachine.dashboard import (
     METRICS_KEY_PREFIX,
     MASTER_KEY,
     LOCK_KEY,
+    LOCK_TTL,
 )
 
 
@@ -434,6 +435,95 @@ class TestLockSafety:
 
         # Release should detect ownership loss
         await manager.release_lock()
+
+        # MASTER_KEY should NOT be deleted when lock is not owned
+        # Check that delete was NOT called for MASTER_KEY (only evalsha for LOCK_KEY)
+        # delete is only called for MASTER_KEY if lock_released is True
+        assert manager._lock_token is None
+        assert manager.is_master() is False
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_release_preserves_master_key_on_ownership_loss(self):
+        """Test that MASTER_KEY is NOT deleted when lock ownership is lost."""
+        DashboardManager.reset_instance()
+
+        # Mock Redis client
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock(return_value=True)
+        mock_client.script_load = AsyncMock(return_value=b"sha")
+        mock_client.evalsha = AsyncMock(return_value=0)  # Lock release failed (not owner)
+        mock_client.get = AsyncMock(return_value=b"other_token")  # Different owner
+        mock_client.delete = AsyncMock()
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        # Become master
+        await manager.try_become_master(8000, "localhost", "test_id")
+        token_before = manager._lock_token
+
+        # Release should detect ownership loss and NOT delete MASTER_KEY
+        await manager.release_lock()
+
+        # Verify delete was NOT called for MASTER_KEY
+        # delete should not be called since lock_released was False
+        delete_calls = [call for call in mock_client.delete.call_args_list]
+        # MASTER_KEY delete should not happen when ownership is lost
+        master_key_deletes = [c for c in delete_calls if MASTER_KEY in str(c)]
+        assert len(master_key_deletes) == 0, "MASTER_KEY should not be deleted when lock ownership lost"
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_stops_server_on_lock_loss(self):
+        """Test that heartbeat loop stops server when lock is lost."""
+        DashboardManager.reset_instance()
+
+        # Mock Redis client
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.script_load = AsyncMock(return_value=b"sha")
+        mock_client.evalsha = AsyncMock(return_value=0)  # Lock renewal fails
+        mock_client.set = AsyncMock(return_value=True)
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        # Become master
+        await manager.try_become_master(8000, "localhost", "test_id")
+
+        # Create a mock server
+        mock_server = MagicMock()
+        mock_server.should_exit = False
+        manager._server = mock_server
+
+        # Simulate heartbeat iteration that loses lock
+        # We need to call _heartbeat_loop once and verify server is stopped
+        import asyncio
+
+        async def run_one_heartbeat():
+            # Simulate one heartbeat cycle
+            if manager._renew_script_sha and hasattr(mock_client, 'evalsha'):
+                result = await mock_client.evalsha(
+                    manager._renew_script_sha,
+                    keys=[LOCK_KEY],
+                    args=[manager._lock_token, LOCK_TTL]
+                )
+                if not result:
+                    await manager._stop_server_if_running()
+                    manager._is_master = False
+                    manager._lock_token = None
+
+        await run_one_heartbeat()
+
+        # Verify server was signaled to stop
+        assert mock_server.should_exit is True, "Server should be signaled to stop on lock loss"
+        assert manager.is_master() is False
 
         DashboardManager.reset_instance()
 

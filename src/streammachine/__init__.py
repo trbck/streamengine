@@ -97,6 +97,42 @@ except ImportError:
     decode_dict_bytes_to_utf8 = None  # type: ignore
     _has_cython_decode = False
 
+# Fast OHLC (optional Cython acceleration)
+try:
+    from .fast_ohlc import (
+        FastOHLC,
+        FastOHLCConsumer,
+        FastOHLC_Python,
+        CandleData,
+        create_ohlc_aggregator,
+        parse_stream_id_timestamp,
+        format_candle_for_redis,
+        _HAS_FAST_OHLC_CYTHON,
+    )
+except ImportError:
+    FastOHLC = None  # type: ignore
+    FastOHLCConsumer = None  # type: ignore
+    FastOHLC_Python = None  # type: ignore
+    CandleData = None  # type: ignore
+    create_ohlc_aggregator = None  # type: ignore
+    parse_stream_id_timestamp = None  # type: ignore
+    format_candle_for_redis = None  # type: ignore
+    _HAS_FAST_OHLC_CYTHON = False
+
+# Fast consumer (optional Cython acceleration)
+try:
+    from .cython import (
+        FastStreamConsumer,
+        ParsedMessage,
+        parse_stream_entries,
+        _has_fast_consumer,
+    )
+except ImportError:
+    FastStreamConsumer = None  # type: ignore
+    ParsedMessage = None  # type: ignore
+    parse_stream_entries = None  # type: ignore
+    _has_fast_consumer = False
+
 # MCP server (optional, requires 'mcp' extra)
 try:
     from .mcp_server import server as mcp_server, run_server as mcp_run_server, main as mcp_main
@@ -151,10 +187,25 @@ __all__ = [
     "prune_old_dataframe_rows",
     "TimeSeriesBuffer",
     "StreamOutput",
-    # Optional
+    # Optional - Redis object storage
     "RedisObjectStorage",
+    # Optional - Cython decode
     "decode_dict_bytes_to_utf8",
     "_has_cython_decode",
+    # Optional - Fast OHLC
+    "FastOHLC",
+    "FastOHLCConsumer",
+    "FastOHLC_Python",
+    "CandleData",
+    "create_ohlc_aggregator",
+    "parse_stream_id_timestamp",
+    "format_candle_for_redis",
+    "_HAS_FAST_OHLC_CYTHON",
+    # Optional - Fast consumer
+    "FastStreamConsumer",
+    "ParsedMessage",
+    "parse_stream_entries",
+    "_has_fast_consumer",
     # MCP Server (optional)
     "mcp_server",
     "mcp_run_server",

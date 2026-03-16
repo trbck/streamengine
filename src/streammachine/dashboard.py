@@ -277,6 +277,7 @@ class DashboardManager:
             client = redis.client
 
             # Use Lua script for safe release - only delete if we own it
+            lock_released = False
             if self._release_script_sha and _HAS_COREDIS:
                 result = await client.evalsha(
                     self._release_script_sha,
@@ -284,6 +285,7 @@ class DashboardManager:
                     args=[self._lock_token]
                 )
                 if result:
+                    lock_released = True
                     logger.info("Released dashboard lock (owned)")
                 else:
                     logger.warning("Could not release lock - not owner or already released")
@@ -292,12 +294,16 @@ class DashboardManager:
                 current = await client.get(LOCK_KEY)
                 if current and current.decode() == self._lock_token:
                     await client.delete(LOCK_KEY)
+                    lock_released = True
                     logger.info("Released dashboard lock")
                 else:
                     logger.warning("Lock ownership lost or changed")
 
-            # Clean up master info
-            await client.delete(MASTER_KEY)
+            # Only delete MASTER_KEY if we still own the lock (prevents erasing new master's metadata)
+            if lock_released:
+                await client.delete(MASTER_KEY)
+            else:
+                logger.warning("Not deleting MASTER_KEY - lock was not owned by this instance")
 
         except Exception as e:
             logger.warning(f"Error releasing dashboard lock: {e}")
@@ -305,6 +311,19 @@ class DashboardManager:
             self._is_master = False
             self._master_info = None
             self._lock_token = None
+
+    async def _stop_server_if_running(self) -> None:
+        """Stop the uvicorn server if running. Called when lock is lost."""
+        if self._server is not None:
+            logger.info("Stopping dashboard server due to lock loss")
+            self._server.should_exit = True
+
+            if self._server_task and not self._server_task.done():
+                try:
+                    await asyncio.wait_for(self._server_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Server shutdown timed out during lock loss")
+                    self._server_task.cancel()
 
     async def _heartbeat_loop(self) -> None:
         """Renew lock TTL and update heartbeat periodically."""
@@ -324,18 +343,22 @@ class DashboardManager:
                             args=[self._lock_token, LOCK_TTL]
                         )
                         if not result:
-                            logger.warning("Lock ownership lost during renewal")
+                            logger.warning("Lock ownership lost during renewal - stopping server")
+                            await self._stop_server_if_running()
                             self._is_master = False
                             self._lock_token = None
+                            return  # Exit heartbeat loop
                     else:
                         # Fallback: check then expire (not atomic)
                         current = await client.get(LOCK_KEY)
                         if current and current.decode() == self._lock_token:
                             await client.expire(LOCK_KEY, LOCK_TTL)
                         else:
-                            logger.warning("Lock ownership lost")
+                            logger.warning("Lock ownership lost - stopping server")
+                            await self._stop_server_if_running()
                             self._is_master = False
                             self._lock_token = None
+                            return  # Exit heartbeat loop
 
                     logger.debug("Dashboard heartbeat renewed")
 
@@ -419,11 +442,37 @@ class DashboardManager:
 
 def create_app() -> 'FastAPI':
     """Create FastAPI application with dashboard routes."""
+    from contextlib import asynccontextmanager
+    from .redisapi import RedisConnection
+
+    # Shared Redis connection for the app lifespan
+    _shared_redis: Optional[RedisConnection] = None
+
+    @asynccontextmanager
+    async def lifespan(app):
+        """Manage Redis connection lifespan."""
+        nonlocal _shared_redis
+        _shared_redis = RedisConnection()
+        await _shared_redis._ensure_pool()
+        try:
+            yield
+        finally:
+            if _shared_redis:
+                await _shared_redis.close()
+                _shared_redis = None
+
     app = FastAPI(
         title="StreamMachine Dashboard",
         description="Monitor StreamMachine tasks across multiple instances",
-        version="0.1.0"
+        version="0.1.0",
+        lifespan=lifespan
     )
+
+    def get_shared_client():
+        """Get the shared Redis client from lifespan state."""
+        if _shared_redis is None:
+            raise RuntimeError("Redis connection not initialized - app not started")
+        return _shared_redis.client
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard_ui():
@@ -433,50 +482,42 @@ def create_app() -> 'FastAPI':
     @app.get("/api/health")
     async def health():
         """Aggregated health from all instances."""
-        return await get_aggregated_health()
+        return await get_aggregated_health(get_shared_client())
 
     @app.get("/api/instances")
     async def instances():
         """List all registered App instances."""
-        return await get_all_instances()
+        return await get_all_instances(get_shared_client())
 
     @app.get("/api/instance/{instance_id}")
     async def instance_detail(instance_id: str):
         """Details for specific instance."""
-        return await get_instance_detail(instance_id)
+        return await get_instance_detail(get_shared_client(), instance_id)
 
     @app.get("/api/agents")
     async def agents():
         """All registered agents across instances."""
-        return await get_all_agents()
+        return await get_all_agents(get_shared_client())
 
     @app.get("/api/timers")
     async def timers():
         """All registered timers across instances."""
-        return await get_all_timers()
+        return await get_all_timers(get_shared_client())
 
     @app.get("/api/storage")
     async def storage():
         """Storage contents viewer."""
-        return await get_storage_contents()
+        return await get_storage_contents(get_shared_client())
 
     @app.get("/api/streams")
     async def streams():
         """Redis stream information."""
-        return await get_stream_info()
+        return await get_stream_info(get_shared_client())
 
     return app
 
 
 # API endpoint implementations - All use Redis directly for cross-process visibility
-
-async def _get_redis_client():
-    """Get Redis client for direct operations."""
-    from .redisapi import RedisConnection
-    redis = RedisConnection()
-    await redis._ensure_pool()
-    return redis.client
-
 
 async def _get_all_instances_from_redis(client) -> List[Dict[str, Any]]:
     """Get all registered instances from Redis using SCAN."""
@@ -527,9 +568,8 @@ async def _get_metrics_from_redis(client, instance_id: str) -> Optional[Dict[str
     return None
 
 
-async def get_aggregated_health() -> Dict[str, Any]:
+async def get_aggregated_health(client) -> Dict[str, Any]:
     """Get aggregated health from all registered instances."""
-    client = await _get_redis_client()
     instances = await _get_all_instances_from_redis(client)
 
     total_agents = 0
@@ -574,9 +614,8 @@ async def get_aggregated_health() -> Dict[str, Any]:
     }
 
 
-async def get_all_instances() -> List[Dict[str, Any]]:
+async def get_all_instances(client) -> List[Dict[str, Any]]:
     """List all registered App instances."""
-    client = await _get_redis_client()
     instances = await _get_all_instances_from_redis(client)
 
     result = []
@@ -598,9 +637,8 @@ async def get_all_instances() -> List[Dict[str, Any]]:
     return result
 
 
-async def get_instance_detail(instance_id: str) -> Dict[str, Any]:
+async def get_instance_detail(client, instance_id: str) -> Dict[str, Any]:
     """Get details for a specific instance."""
-    client = await _get_redis_client()
     instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
 
     data = await client.get(instance_key)
@@ -619,9 +657,8 @@ async def get_instance_detail(instance_id: str) -> Dict[str, Any]:
     }
 
 
-async def get_all_agents() -> List[Dict[str, Any]]:
+async def get_all_agents(client) -> List[Dict[str, Any]]:
     """Get all registered agents across instances."""
-    client = await _get_redis_client()
     instances = await _get_all_instances_from_redis(client)
 
     agents = []
@@ -638,9 +675,8 @@ async def get_all_agents() -> List[Dict[str, Any]]:
     return agents
 
 
-async def get_all_timers() -> List[Dict[str, Any]]:
+async def get_all_timers(client) -> List[Dict[str, Any]]:
     """Get all registered timers across instances."""
-    client = await _get_redis_client()
     instances = await _get_all_instances_from_redis(client)
 
     timers = []
@@ -657,10 +693,8 @@ async def get_all_timers() -> List[Dict[str, Any]]:
     return timers
 
 
-async def get_storage_contents() -> Dict[str, Any]:
+async def get_storage_contents(client) -> Dict[str, Any]:
     """Get storage contents (keys only for safety)."""
-    client = await _get_redis_client()
-
     # Use SCAN to find all streammachine keys
     keys = []
     cursor = 0
@@ -700,10 +734,8 @@ async def get_storage_contents() -> Dict[str, Any]:
     }
 
 
-async def get_stream_info() -> List[Dict[str, Any]]:
+async def get_stream_info(client) -> List[Dict[str, Any]]:
     """Get Redis stream information."""
-    client = await _get_redis_client()
-
     # Get stream info from registered instances
     instances = await _get_all_instances_from_redis(client)
     streams = []
