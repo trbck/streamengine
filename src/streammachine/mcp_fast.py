@@ -24,6 +24,18 @@ except ImportError:
 from streammachine.redisapi import RedisConnection
 from streammachine.storage import Storage
 
+# Try to import FastOHLC (optional)
+try:
+    from streammachine.fast_ohlc import create_ohlc_aggregator, _HAS_FAST_OHLC_CYTHON
+    _HAS_OHLC = True
+except ImportError:
+    create_ohlc_aggregator = None
+    _HAS_FAST_OHLC_CYTHON = False
+    _HAS_OHLC = False
+
+# Global state
+_ohlc_aggregators = {}  # OHLC aggregators by name
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -248,6 +260,213 @@ async def redis_ping() -> str:
     redis = await get_redis()
     result = await redis.health_check()
     return _format_response({"ping": "pong" if result else "failed"})
+
+
+# =============================================================================
+# OHLC AGGREGATION TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def ohlc_create(name: str, intervals: list = [60000, 300000]) -> str:
+    """Create an OHLC aggregator for real-time candle aggregation from tick data.
+
+    Args:
+        name: Name for the aggregator (used to reference it later)
+        intervals: Candle intervals in milliseconds (default: [60000, 300000] for 1min, 5min)
+
+    Returns:
+        JSON response with aggregator info
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' already exists")
+    _ohlc_aggregators[name] = create_ohlc_aggregator(intervals=intervals)
+    return _format_response({
+        "name": name,
+        "intervals": intervals,
+        "implementation": "Cython" if _HAS_FAST_OHLC_CYTHON else "Python"
+    })
+
+
+@mcp.tool()
+async def ohlc_update(
+    name: str,
+    symbol: str,
+    price: float,
+    volume: float,
+    timestamp_ms: int = None
+) -> str:
+    """Update an OHLC aggregator with a new tick (trade data).
+
+    Args:
+        name: Name of the aggregator
+        symbol: Trading symbol (e.g., AAPL, BTCUSD)
+        price: Trade price
+        volume: Trade volume
+        timestamp_ms: Unix timestamp in milliseconds (optional, defaults to now)
+
+    Returns:
+        JSON response with update status
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    if timestamp_ms is None:
+        timestamp_ms = int(__import__("time").time() * 1000)
+    agg.update_tick(symbol.encode('utf-8'), price, volume, timestamp_ms)
+    return _format_response({
+        "name": name,
+        "symbol": symbol,
+        "tick_count": agg.tick_count
+    })
+
+
+@mcp.tool()
+async def ohlc_get_candles(name: str, symbol: str, interval_ms: int) -> str:
+    """Get OHLC candles from an aggregator for a specific symbol and interval.
+
+    Args:
+        name: Name of the aggregator
+        symbol: Trading symbol
+        interval_ms: Candle interval in milliseconds
+
+    Returns:
+        JSON response with candles
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    candles = agg.get_candles_as_dicts(symbol.encode('utf-8'), interval_ms)
+    return _format_response({
+        "name": name,
+        "symbol": symbol,
+        "interval_ms": interval_ms,
+        "candle_count": len(candles),
+        "candles": candles
+    })
+
+
+@mcp.tool()
+async def ohlc_get_completed(
+    name: str,
+    symbol: str,
+    interval_ms: int,
+    before_timestamp_ms: int = 0
+) -> str:
+    """Get completed OHLC candles (ready to emit to downstream systems).
+
+    Args:
+        name: Name of the aggregator
+        symbol: Trading symbol
+        interval_ms: Candle interval in milliseconds
+        before_timestamp_ms: Get candles before this timestamp (default: now)
+
+    Returns:
+        JSON response with completed candles
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    completed = agg.get_completed_candles(symbol.encode('utf-8'), interval_ms, before_timestamp_ms)
+    candles = [c.to_dict() for c in completed]
+    return _format_response({
+        "name": name,
+        "symbol": symbol,
+        "interval_ms": interval_ms,
+        "completed_count": len(candles),
+        "candles": candles
+    })
+
+
+@mcp.tool()
+async def ohlc_flush(
+    name: str,
+    symbol: str,
+    interval_ms: int,
+    before_timestamp_ms: int = 0
+) -> str:
+    """Remove completed candles from an aggregator's memory.
+
+    Args:
+        name: Name of the aggregator
+        symbol: Trading symbol
+        interval_ms: Candle interval in milliseconds
+        before_timestamp_ms: Flush candles before this timestamp (default: now)
+
+    Returns:
+        JSON response confirming flush
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    agg.flush_interval(symbol.encode('utf-8'), interval_ms, before_timestamp_ms)
+    return _format_response({"name": name, "flushed": True})
+
+
+@mcp.tool()
+async def ohlc_clear(name: str) -> str:
+    """Clear all data from an OHLC aggregator.
+
+    Args:
+        name: Name of the aggregator
+
+    Returns:
+        JSON response confirming clear
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    agg.clear()
+    return _format_response({"name": name, "cleared": True})
+
+
+@mcp.tool()
+async def ohlc_stats(name: str) -> str:
+    """Get statistics about an OHLC aggregator.
+
+    Args:
+        name: Name of the aggregator
+
+    Returns:
+        JSON response with stats
+    """
+    if not _HAS_OHLC:
+        return _format_response(None, success=False, error="FastOHLC not available")
+    if name not in _ohlc_aggregators:
+        return _format_response(None, success=False, error=f"Aggregator '{name}' not found")
+    agg = _ohlc_aggregators[name]
+    return _format_response({
+        "name": name,
+        "tick_count": agg.tick_count,
+        "intervals": agg.intervals,
+        "implementation": "Cython" if _HAS_FAST_OHLC_CYTHON else "Python"
+    })
+
+
+@mcp.tool()
+async def ohlc_list() -> str:
+    """List all OHLC aggregators.
+
+    Returns:
+        JSON response with list of aggregators
+    """
+    return _format_response({
+        "aggregators": list(_ohlc_aggregators.keys()),
+        "count": len(_ohlc_aggregators),
+        "has_ohlc": _HAS_OHLC,
+        "has_cython": _HAS_FAST_OHLC_CYTHON
+    })
 
 
 # =============================================================================

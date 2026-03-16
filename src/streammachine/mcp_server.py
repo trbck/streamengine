@@ -44,6 +44,15 @@ import mcp.server.session
 from .redisapi import RedisConnection
 from .storage import Storage
 
+# Try to import FastOHLC (optional)
+try:
+    from .fast_ohlc import create_ohlc_aggregator, _HAS_FAST_OHLC_CYTHON
+    _HAS_OHLC = True
+except ImportError:
+    create_ohlc_aggregator = None
+    _HAS_FAST_OHLC_CYTHON = False
+    _HAS_OHLC = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +66,7 @@ server = Server("streammachine")
 # Global state for connections
 _redis: Optional[RedisConnection] = None
 _storage: Optional[Storage] = None
+_ohlc_aggregators: Dict[str, Any] = {}  # OHLC aggregators by name
 
 
 async def get_redis() -> RedisConnection:
@@ -334,6 +344,160 @@ async def list_tools() -> list[Tool]:
                 "required": ["pattern"],
             },
         ),
+
+        # OHLC Aggregation Tools (if available)
+        Tool(
+            name="ohlc_create",
+            description="Create an OHLC aggregator for real-time candle aggregation from tick data.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the aggregator (used to reference it later)",
+                    },
+                    "intervals": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Candle intervals in milliseconds (default: [60000, 300000] for 1min, 5min)",
+                        "default": [60000, 300000],
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="ohlc_update",
+            description="Update an OHLC aggregator with a new tick (trade data).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading symbol (e.g., AAPL, BTCUSD)",
+                    },
+                    "price": {
+                        "type": "number",
+                        "description": "Trade price",
+                    },
+                    "volume": {
+                        "type": "number",
+                        "description": "Trade volume",
+                    },
+                    "timestamp_ms": {
+                        "type": "integer",
+                        "description": "Unix timestamp in milliseconds (optional, defaults to now)",
+                    },
+                },
+                "required": ["name", "symbol", "price", "volume"],
+            },
+        ),
+        Tool(
+            name="ohlc_get_candles",
+            description="Get OHLC candles from an aggregator for a specific symbol and interval.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading symbol",
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Candle interval in milliseconds",
+                    },
+                },
+                "required": ["name", "symbol", "interval_ms"],
+            },
+        ),
+        Tool(
+            name="ohlc_get_completed",
+            description="Get completed OHLC candles (ready to emit to downstream systems).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading symbol",
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Candle interval in milliseconds",
+                    },
+                },
+                "required": ["name", "symbol", "interval_ms"],
+            },
+        ),
+        Tool(
+            name="ohlc_flush",
+            description="Remove completed candles from an aggregator's memory.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Trading symbol",
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Candle interval in milliseconds",
+                    },
+                },
+                "required": ["name", "symbol", "interval_ms"],
+            },
+        ),
+        Tool(
+            name="ohlc_clear",
+            description="Clear all data from an OHLC aggregator.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="ohlc_stats",
+            description="Get statistics about an OHLC aggregator (tick count, intervals, implementation).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the aggregator",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="ohlc_list",
+            description="List all OHLC aggregators.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -485,6 +649,122 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
                 return [TextContent(type="text", text=_format_response({"deleted": count}))]
             finally:
                 await obj_store.close()
+
+        # OHLC Aggregation Tools
+        elif name == "ohlc_create":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            intervals = arguments.get("intervals", [60000, 300000])
+            if agg_name in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' already exists"))]
+            _ohlc_aggregators[agg_name] = create_ohlc_aggregator(intervals=intervals)
+            return [TextContent(type="text", text=_format_response({
+                "name": agg_name,
+                "intervals": intervals,
+                "implementation": "Cython" if _HAS_FAST_OHLC_CYTHON else "Python"
+            }))]
+
+        elif name == "ohlc_update":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            symbol = arguments["symbol"].encode('utf-8')
+            price = float(arguments["price"])
+            volume = float(arguments["volume"])
+            timestamp_ms = arguments.get("timestamp_ms", int(__import__("time").time() * 1000))
+            agg.update_tick(symbol, price, volume, timestamp_ms)
+            return [TextContent(type="text", text=_format_response({
+                "name": agg_name,
+                "symbol": arguments["symbol"],
+                "tick_count": agg.tick_count
+            }))]
+
+        elif name == "ohlc_get_candles":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            symbol = arguments["symbol"].encode('utf-8')
+            interval_ms = arguments["interval_ms"]
+            candles = agg.get_candles_as_dicts(symbol, interval_ms)
+            return [TextContent(type="text", text=_format_response({
+                "name": agg_name,
+                "symbol": arguments["symbol"],
+                "interval_ms": interval_ms,
+                "candle_count": len(candles),
+                "candles": candles
+            }))]
+
+        elif name == "ohlc_get_completed":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            symbol = arguments["symbol"].encode('utf-8')
+            interval_ms = arguments["interval_ms"]
+            before_ts = arguments.get("before_timestamp_ms", 0)
+            completed = agg.get_completed_candles(symbol, interval_ms, before_ts)
+            candles = [c.to_dict() for c in completed]
+            return [TextContent(type="text", text=_format_response({
+                "name": agg_name,
+                "symbol": arguments["symbol"],
+                "interval_ms": interval_ms,
+                "completed_count": len(candles),
+                "candles": candles
+            }))]
+
+        elif name == "ohlc_flush":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            symbol = arguments["symbol"].encode('utf-8')
+            interval_ms = arguments["interval_ms"]
+            before_ts = arguments.get("before_timestamp_ms", 0)
+            agg.flush_interval(symbol, interval_ms, before_ts)
+            return [TextContent(type="text", text=_format_response({"name": agg_name, "flushed": True}))]
+
+        elif name == "ohlc_clear":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            agg.clear()
+            return [TextContent(type="text", text=_format_response({"name": agg_name, "cleared": True}))]
+
+        elif name == "ohlc_stats":
+            if not _HAS_OHLC:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="FastOHLC not available"))]
+            agg_name = arguments["name"]
+            if agg_name not in _ohlc_aggregators:
+                return [TextContent(type="text", text=_format_response(None, success=False, error=f"Aggregator '{agg_name}' not found"))]
+            agg = _ohlc_aggregators[agg_name]
+            return [TextContent(type="text", text=_format_response({
+                "name": agg_name,
+                "tick_count": agg.tick_count,
+                "intervals": agg.intervals,
+                "implementation": "Cython" if _HAS_FAST_OHLC_CYTHON else "Python"
+            }))]
+
+        elif name == "ohlc_list":
+            return [TextContent(type="text", text=_format_response({
+                "aggregators": list(_ohlc_aggregators.keys()),
+                "count": len(_ohlc_aggregators),
+                "has_ohlc": _HAS_OHLC,
+                "has_cython": _HAS_FAST_OHLC_CYTHON
+            }))]
 
         else:
             return [TextContent(type="text", text=_format_response(None, success=False, error=f"Unknown tool: {name}"))]
