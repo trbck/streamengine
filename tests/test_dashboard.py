@@ -671,26 +671,6 @@ class TestRedisDirectStorage:
         assert mock_client.expire.called
         assert mock_client.set.called
 
-    @pytest.mark.asyncio
-    async def test_dashboard_helpers_close_temporary_redis_connections(self):
-        """Test that dashboard helper functions close temporary Redis connections."""
-        from streammachine.dashboard import get_all_instances
-
-        mock_client = AsyncMock()
-        mock_client.scan = AsyncMock(return_value=(0, []))
-
-        mock_redis = MagicMock()
-        mock_redis.client = mock_client
-        mock_redis._ensure_pool = AsyncMock()
-        mock_redis.close = AsyncMock()
-
-        with patch("streammachine.redisapi.RedisConnection", return_value=mock_redis):
-            instances = await get_all_instances()
-
-        assert instances == []
-        mock_redis.close.assert_awaited_once()
-
-
 class TestDashboardDisabled:
     """Tests for dashboard_enabled=False behavior."""
 

@@ -344,161 +344,164 @@ async def list_tools() -> list[Tool]:
                 "required": ["pattern"],
             },
         ),
-
-        # OHLC Aggregation Tools (if available)
-        Tool(
-            name="ohlc_create",
-            description="Create an OHLC aggregator for real-time candle aggregation from tick data.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name for the aggregator (used to reference it later)",
-                    },
-                    "intervals": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Candle intervals in milliseconds (default: [60000, 300000] for 1min, 5min)",
-                        "default": [60000, 300000],
-                    },
-                },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="ohlc_update",
-            description="Update an OHLC aggregator with a new tick (trade data).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Trading symbol (e.g., AAPL, BTCUSD)",
-                    },
-                    "price": {
-                        "type": "number",
-                        "description": "Trade price",
-                    },
-                    "volume": {
-                        "type": "number",
-                        "description": "Trade volume",
-                    },
-                    "timestamp_ms": {
-                        "type": "integer",
-                        "description": "Unix timestamp in milliseconds (optional, defaults to now)",
-                    },
-                },
-                "required": ["name", "symbol", "price", "volume"],
-            },
-        ),
-        Tool(
-            name="ohlc_get_candles",
-            description="Get OHLC candles from an aggregator for a specific symbol and interval.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Trading symbol",
-                    },
-                    "interval_ms": {
-                        "type": "integer",
-                        "description": "Candle interval in milliseconds",
-                    },
-                },
-                "required": ["name", "symbol", "interval_ms"],
-            },
-        ),
-        Tool(
-            name="ohlc_get_completed",
-            description="Get completed OHLC candles (ready to emit to downstream systems).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Trading symbol",
-                    },
-                    "interval_ms": {
-                        "type": "integer",
-                        "description": "Candle interval in milliseconds",
-                    },
-                },
-                "required": ["name", "symbol", "interval_ms"],
-            },
-        ),
-        Tool(
-            name="ohlc_flush",
-            description="Remove completed candles from an aggregator's memory.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Trading symbol",
-                    },
-                    "interval_ms": {
-                        "type": "integer",
-                        "description": "Candle interval in milliseconds",
-                    },
-                },
-                "required": ["name", "symbol", "interval_ms"],
-            },
-        ),
-        Tool(
-            name="ohlc_clear",
-            description="Clear all data from an OHLC aggregator.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="ohlc_stats",
-            description="Get statistics about an OHLC aggregator (tick count, intervals, implementation).",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of the aggregator",
-                    },
-                },
-                "required": ["name"],
-            },
-        ),
-        Tool(
-            name="ohlc_list",
-            description="List all OHLC aggregators.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
     ]
+
+    # OHLC Aggregation Tools (if available)
+    if _HAS_OHLC:
+        tools.extend([
+            Tool(
+                name="ohlc_create",
+                description="Create an OHLC aggregator for real-time candle aggregation from tick data.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name for the aggregator (used to reference it later)",
+                        },
+                        "intervals": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Candle intervals in milliseconds (default: [60000, 300000] for 1min, 5min)",
+                            "default": [60000, 300000],
+                        },
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="ohlc_update",
+                description="Update an OHLC aggregator with a new tick (trade data).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Trading symbol (e.g., AAPL, BTCUSD)",
+                        },
+                        "price": {
+                            "type": "number",
+                            "description": "Trade price",
+                        },
+                        "volume": {
+                            "type": "number",
+                            "description": "Trade volume",
+                        },
+                        "timestamp_ms": {
+                            "type": "integer",
+                            "description": "Unix timestamp in milliseconds (optional, defaults to now)",
+                        },
+                    },
+                    "required": ["name", "symbol", "price", "volume"],
+                },
+            ),
+            Tool(
+                name="ohlc_get_candles",
+                description="Get OHLC candles from an aggregator for a specific symbol and interval.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Trading symbol",
+                        },
+                        "interval_ms": {
+                            "type": "integer",
+                            "description": "Candle interval in milliseconds",
+                        },
+                    },
+                    "required": ["name", "symbol", "interval_ms"],
+                },
+            ),
+            Tool(
+                name="ohlc_get_completed",
+                description="Get completed OHLC candles (ready to emit to downstream systems).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Trading symbol",
+                        },
+                        "interval_ms": {
+                            "type": "integer",
+                            "description": "Candle interval in milliseconds",
+                        },
+                    },
+                    "required": ["name", "symbol", "interval_ms"],
+                },
+            ),
+            Tool(
+                name="ohlc_flush",
+                description="Remove completed candles from an aggregator's memory.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Trading symbol",
+                        },
+                        "interval_ms": {
+                            "type": "integer",
+                            "description": "Candle interval in milliseconds",
+                        },
+                    },
+                    "required": ["name", "symbol", "interval_ms"],
+                },
+            ),
+            Tool(
+                name="ohlc_clear",
+                description="Clear all data from an OHLC aggregator.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="ohlc_stats",
+                description="Get statistics about an OHLC aggregator (tick count, intervals, implementation).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the aggregator",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
+                name="ohlc_list",
+                description="List all OHLC aggregators.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+        ])
 
     if _ALLOW_UNSAFE_OBJECT_TOOLS:
         tools.append(
