@@ -157,6 +157,9 @@ class Storage:
                 if command == "terminate":
                     logger.debug("Command handler terminating")
                     break
+            except (BrokenPipeError, EOFError, OSError) as e:
+                logger.debug("Command handler exiting after manager shutdown: %s", e)
+                break
             except Exception as e:
                 logger.error(f"Error in command handler: {e}")
 
