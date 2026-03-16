@@ -10,20 +10,71 @@ Note: Multiprocess tests have special requirements:
 - State sharing is via multiprocessing.Manager
 """
 import asyncio
-import os
-import sys
-import time
-import pytest
 import multiprocessing
+import sys
+
+import pytest
 
 from streammachine import Storage
-
 
 # Skip on Windows due to process spawning differences
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="Multiprocess tests require Unix-like process spawning",
 )
+
+
+def _bind_shared_storage(shared_dict, command_queue) -> Storage:
+    """Attach worker-local Storage to the parent's manager proxies."""
+    storage = Storage()
+    storage.manager = None
+    storage.shared_dict = shared_dict
+    storage.command_queue = command_queue
+    storage._manager_started = True
+    return storage
+
+
+def increment_counter(worker_id: int, n_times: int, shared_dict, command_queue) -> None:
+    """Run in a separate process to increment the shared counter."""
+    storage = _bind_shared_storage(shared_dict, command_queue)
+
+    async def do_increment() -> None:
+        await storage.write(f"worker_count:{worker_id}", n_times)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(do_increment())
+    finally:
+        loop.close()
+
+
+def cpu_bound_task(n: int) -> int:
+    """A CPU-bound task that runs in a separate process."""
+    return sum(i * i for i in range(n))
+
+
+def worker_task(task_id: int, shared_dict, command_queue) -> dict:
+    """Task that runs in a worker process using shared Storage proxies."""
+    storage = _bind_shared_storage(shared_dict, command_queue)
+
+    async def do_work() -> dict:
+        result_key = f"task_result:{task_id}"
+        result_value = {"task_id": task_id, "done": True}
+        await storage.write(result_key, result_value)
+        return result_value
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(do_work())
+    finally:
+        loop.close()
+
+
+def failing_task() -> None:
+    """Task used to verify child exceptions propagate."""
+    raise ValueError("Intentional error in child process")
 
 
 class TestStorageMultiprocess:
@@ -37,35 +88,13 @@ class TestStorageMultiprocess:
         storage._ensure_manager()
 
         try:
-            # Write initial value
-            await storage.write("shared_counter", 0)
-
-            def increment_counter(n_times: int) -> None:
-                """Run in separate process to increment counter."""
-                # Each process needs its own Storage instance
-                # but they share the underlying manager dict
-                s = Storage()
-                s._ensure_manager()
-
-                async def do_increment():
-                    for _ in range(n_times):
-                        current = await s.read("shared_counter", default=0)
-                        await s.write("shared_counter", current + 1)
-
-                # Run async code in new event loop
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(do_increment())
-                finally:
-                    loop.close()
-
             # Run multiple processes
+            ctx = multiprocessing.get_context("spawn")
             processes = []
-            for _ in range(3):
-                p = multiprocessing.Process(
+            for worker_id in range(3):
+                p = ctx.Process(
                     target=increment_counter,
-                    args=(10,),
+                    args=(worker_id, 10, storage.shared_dict, storage.command_queue),
                 )
                 p.start()
                 processes.append(p)
@@ -73,12 +102,14 @@ class TestStorageMultiprocess:
             # Wait for all processes
             for p in processes:
                 p.join(timeout=10)
+                assert p.exitcode == 0
 
-            # Verify counter was incremented
-            final_value = await storage.read("shared_counter")
-            # Note: Due to race conditions, final value may not be exactly 30
-            # but should be > 0 if sharing worked
-            assert final_value > 0
+            # Verify each worker wrote its exact count into shared storage
+            worker_counts = {
+                str(worker_id): await storage.read(f"worker_count:{worker_id}")
+                for worker_id in range(3)
+            }
+            assert worker_counts == {"0": 10, "1": 10, "2": 10}
 
         finally:
             Storage.reset_instance()
@@ -171,13 +202,12 @@ class TestProcessPoolExecutor:
 
     def test_process_pool_basic(self):
         """Test basic ProcessPoolExecutor functionality."""
-        def cpu_bound_task(n: int) -> int:
-            """A CPU-bound task that runs in a separate process."""
-            return sum(i * i for i in range(n))
-
         from concurrent.futures import ProcessPoolExecutor
 
-        with ProcessPoolExecutor(max_workers=2) as executor:
+        with ProcessPoolExecutor(
+            max_workers=2,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
             futures = [
                 executor.submit(cpu_bound_task, 1000),
                 executor.submit(cpu_bound_task, 2000),
@@ -195,43 +225,36 @@ class TestProcessPoolExecutor:
         storage._ensure_manager()
 
         try:
-            await storage.write("task_results", [])
-
-            def worker_task(task_id: int) -> dict:
-                """Task that runs in worker process."""
-                # Access Storage from worker process
-                s = Storage()
-                s._ensure_manager()
-
-                async def do_work():
-                    # Append result to shared list
-                    results = await s.read("task_results", default=[])
-                    results.append({"task_id": task_id, "done": True})
-                    await s.write("task_results", results)
-                    return results
-
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(do_work())
-                finally:
-                    loop.close()
-
             # Run tasks in process pool
             from concurrent.futures import ProcessPoolExecutor
 
-            with ProcessPoolExecutor(max_workers=2) as executor:
+            with ProcessPoolExecutor(
+                max_workers=2,
+                mp_context=multiprocessing.get_context("spawn"),
+            ) as executor:
                 loop = asyncio.get_event_loop()
                 futures = [
-                    loop.run_in_executor(executor, worker_task, i)
+                    loop.run_in_executor(
+                        executor,
+                        worker_task,
+                        i,
+                        storage.shared_dict,
+                        storage.command_queue,
+                    )
                     for i in range(3)
                 ]
-                await asyncio.gather(*futures)
+                results = await asyncio.gather(*futures)
 
-            # Verify results were shared
-            results = await storage.read("task_results")
-            # Results should contain entries from workers
-            assert len(results) >= 1  # At least some results should be present
+            # Verify each worker result was stored under its own key
+            assert sorted(results, key=lambda item: item["task_id"]) == [
+                {"task_id": 0, "done": True},
+                {"task_id": 1, "done": True},
+                {"task_id": 2, "done": True},
+            ]
+            stored_results = await asyncio.gather(
+                *(storage.read(f"task_result:{i}") for i in range(3))
+            )
+            assert stored_results == results
 
         finally:
             Storage.reset_instance()
@@ -276,12 +299,12 @@ class TestErrorPropagation:
 
     def test_exception_in_child_process(self):
         """Test that exceptions in child processes are handled."""
-        def failing_task():
-            raise ValueError("Intentional error in child process")
-
         from concurrent.futures import ProcessPoolExecutor
 
-        with ProcessPoolExecutor(max_workers=1) as executor:
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
             future = executor.submit(failing_task)
             with pytest.raises(ValueError, match="Intentional error"):
                 future.result()

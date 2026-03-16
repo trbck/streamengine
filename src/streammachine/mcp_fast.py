@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 try:
@@ -49,6 +50,7 @@ mcp = FastMCP("streammachine")
 # Global state for connections
 _redis: Optional[RedisConnection] = None
 _storage: Optional[Storage] = None
+_ALLOW_UNSAFE_OBJECT_TOOLS = os.environ.get("STREAMMACHINE_ENABLE_UNSAFE_PICKLE_TOOLS") == "1"
 
 
 async def get_redis() -> RedisConnection:
@@ -75,6 +77,19 @@ def _format_response(data: Any, success: bool = True, error: Optional[str] = Non
         "data": data if success else None,
         "error": error,
     }, default=str)
+
+
+def _decode_value(value: Any) -> Any:
+    """Normalize Redis bytes responses to strings where appropriate."""
+    if isinstance(value, bytes):
+        return value.decode()
+    return value
+
+
+def _stream_group_count(info: dict[str, Any]) -> int:
+    """Handle coredis XINFO responses that return groups as either count or list."""
+    groups = info.get("groups", 0)
+    return groups if isinstance(groups, int) else len(groups)
 
 
 # =============================================================================
@@ -114,7 +129,7 @@ async def stream_read(stream: str, count: int = 10, start: str = "+") -> str:
     """
     redis = await get_redis()
     await redis._ensure_pool()
-    results = await redis.client.xrevrange(stream, "+", "-", count=count)
+    results = await redis.client.xrevrange(stream, start, "-", count=count)
     messages = []
     for msg_id, data in results:
         messages.append({
@@ -139,7 +154,7 @@ async def stream_info(stream: str) -> str:
     info = await redis.client.xinfo_stream(stream)
     result = {
         "length": info.get("length", 0),
-        "groups": len(info.get("groups", [])),
+        "groups": _stream_group_count(info),
         "last_generated_id": str(info.get("last-generated-id", "")),
     }
     return _format_response(result)
@@ -160,8 +175,8 @@ async def stream_list(pattern: str = "*") -> str:
     keys = await redis.client.keys(pattern)
     streams = []
     for key in keys:
-        key_str = key.decode() if isinstance(key, bytes) else key
-        key_type = await redis.client.type(key)
+        key_str = _decode_value(key)
+        key_type = _decode_value(await redis.client.type(key))
         if key_type == "stream":
             streams.append(key_str)
     return _format_response({"streams": streams})

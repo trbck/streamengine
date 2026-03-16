@@ -15,6 +15,7 @@ Prerequisites:
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 async def test_mcp_server():
     """Test the MCP server handlers directly."""
+    failures = []
     print("=" * 60)
     print("StreamMachine MCP Server Test Client")
     print("=" * 60)
@@ -64,8 +66,10 @@ async def test_mcp_server():
         "stream_send", "stream_send_batch", "stream_read", "stream_info", "stream_list",
         "storage_read", "storage_write", "storage_delete", "storage_keys", "storage_clear",
         "health_check", "redis_info", "redis_ping",
-        "obj_get", "obj_list", "obj_delete",
+        "obj_list", "obj_delete",
     ]
+    if os.environ.get("STREAMMACHINE_ENABLE_UNSAFE_PICKLE_TOOLS") == "1":
+        expected_tools.append("obj_get")
     for tool in expected_tools:
         assert tool in tool_names, f"Missing tool: {tool}"
     print(f"  ✓ All {len(expected_tools)} expected tools present")
@@ -161,18 +165,26 @@ async def test_mcp_server():
             "value": {"test": "value", "number": 42}
         })
         write_data = json.loads(write_result[0].text)
+        if not write_data.get("success"):
+            failures.append(f"storage_write failed: {write_data.get('error')}")
         print(f"  Write result: {write_data.get('data')}")
 
         # Read it back
         read_result = await mcp_module.call_tool("storage_read", {"key": "test_key"})
         read_data = json.loads(read_result[0].text)
+        if not read_data.get("success"):
+            failures.append(f"storage_read failed: {read_data.get('error')}")
         print(f"  Read result: {read_data.get('data')}")
 
         # Clean up
         delete_result = await mcp_module.call_tool("storage_delete", {"key": "test_key"})
+        delete_data = json.loads(delete_result[0].text)
+        if not delete_data.get("success"):
+            failures.append(f"storage_delete failed: {delete_data.get('error')}")
         print("  ✓ Storage operations successful")
     except Exception as e:
-        print(f"  ⚠ Storage operations failed: {e}")
+        failures.append(f"Storage operations failed: {e}")
+        print(f"  ✗ Storage operations failed: {e}")
 
     print("\n" + "=" * 60)
     print("All tests completed!")
@@ -181,7 +193,11 @@ async def test_mcp_server():
     print("To fully test, ensure Redis is available at localhost:6379")
     print("or set the REDIS_URL environment variable.")
 
-    return True
+    if failures:
+        print("\nFailures:")
+        for failure in failures:
+            print(f"  - {failure}")
+    return not failures
 
 
 def main():

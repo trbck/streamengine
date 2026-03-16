@@ -36,6 +36,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
@@ -43,9 +44,9 @@ logger = logging.getLogger(__name__)
 
 # FastAPI/uvicorn imports (optional dependency)
 try:
+    import uvicorn
     from fastapi import FastAPI
     from fastapi.responses import HTMLResponse
-    import uvicorn
     _HAS_FASTAPI = True
 except ImportError:
     FastAPI = None
@@ -199,6 +200,27 @@ class DashboardManager:
         self._release_script_sha = await client.script_load(RELEASE_LOCK_SCRIPT)
         logger.debug("Loaded lock safety scripts into Redis")
 
+    @staticmethod
+    def _lock_value_matches(current: Any, token: str) -> bool:
+        """Return True when the stored Redis lock value matches our token."""
+        if current is None:
+            return False
+        if isinstance(current, bytes):
+            current = current.decode()
+        return current == token
+
+    async def _shutdown_server_task(self, timeout: float = 5.0) -> None:
+        """Signal the dashboard server to exit and await completion."""
+        if self._server is not None:
+            self._server.should_exit = True
+
+        if self._server_task is not None and not self._server_task.done():
+            try:
+                await asyncio.wait_for(self._server_task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Server shutdown timed out, cancelling")
+                self._server_task.cancel()
+
     async def try_become_master(self, port: int, host: str, app_instance_id: str) -> bool:
         """
         Atomically acquire dashboard master lock via Redis SETNX.
@@ -236,8 +258,15 @@ class DashboardManager:
                 )
 
             if acquired:
-                # Load Lua scripts for safe lock operations
-                await self._load_scripts(client)
+                try:
+                    # Load Lua scripts for safe lock operations
+                    await self._load_scripts(client)
+                except Exception:
+                    current = await client.get(LOCK_KEY)
+                    if self._lock_value_matches(current, self._lock_token):
+                        await client.delete(LOCK_KEY)
+                    self._lock_token = None
+                    raise
 
                 self._is_master = True
                 self._app_instance_id = app_instance_id
@@ -277,7 +306,7 @@ class DashboardManager:
             client = redis.client
 
             # Use Lua script for safe release - only delete if we own it
-            lock_released = False
+            released = False
             if self._release_script_sha and _HAS_COREDIS:
                 result = await client.evalsha(
                     self._release_script_sha,
@@ -285,22 +314,22 @@ class DashboardManager:
                     args=[self._lock_token]
                 )
                 if result:
-                    lock_released = True
+                    released = True
                     logger.info("Released dashboard lock (owned)")
                 else:
                     logger.warning("Could not release lock - not owner or already released")
             else:
                 # Fallback: check then delete (not atomic but better than nothing)
                 current = await client.get(LOCK_KEY)
-                if current and current.decode() == self._lock_token:
+                if self._lock_value_matches(current, self._lock_token):
                     await client.delete(LOCK_KEY)
-                    lock_released = True
+                    released = True
                     logger.info("Released dashboard lock")
                 else:
                     logger.warning("Lock ownership lost or changed")
 
             # Only delete MASTER_KEY if we still own the lock (prevents erasing new master's metadata)
-            if lock_released:
+            if released:
                 await client.delete(MASTER_KEY)
             else:
                 logger.warning("Not deleting MASTER_KEY - lock was not owned by this instance")
@@ -343,22 +372,28 @@ class DashboardManager:
                             args=[self._lock_token, LOCK_TTL]
                         )
                         if not result:
-                            logger.warning("Lock ownership lost during renewal - stopping server")
-                            await self._stop_server_if_running()
-                            self._is_master = False
-                            self._lock_token = None
-                            return  # Exit heartbeat loop
+                            logger.warning("Lock ownership lost during renewal")
+                            try:
+                                await self._shutdown_server_task()
+                            finally:
+                                self._is_master = False
+                                self._lock_token = None
+                                self._master_info = None
+                            break
                     else:
                         # Fallback: check then expire (not atomic)
                         current = await client.get(LOCK_KEY)
-                        if current and current.decode() == self._lock_token:
+                        if self._lock_value_matches(current, self._lock_token):
                             await client.expire(LOCK_KEY, LOCK_TTL)
                         else:
-                            logger.warning("Lock ownership lost - stopping server")
-                            await self._stop_server_if_running()
-                            self._is_master = False
-                            self._lock_token = None
-                            return  # Exit heartbeat loop
+                            logger.warning("Lock ownership lost")
+                            try:
+                                await self._shutdown_server_task()
+                            finally:
+                                self._is_master = False
+                                self._lock_token = None
+                                self._master_info = None
+                            break
 
                     logger.debug("Dashboard heartbeat renewed")
 
@@ -409,7 +444,6 @@ class DashboardManager:
 
         # Signal uvicorn to shutdown gracefully
         if self._server is not None:
-            self._server.should_exit = True
             logger.debug("Signaled uvicorn server to shutdown")
 
         # Cancel heartbeat task
@@ -421,12 +455,7 @@ class DashboardManager:
                 pass
 
         # Wait for server task to finish (with timeout)
-        if self._server_task and not self._server_task.done():
-            try:
-                await asyncio.wait_for(self._server_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("Server shutdown timed out, cancelling")
-                self._server_task.cancel()
+        await self._shutdown_server_task()
 
         # Release lock after server is stopped
         await self.release_lock()
@@ -440,7 +469,7 @@ class DashboardManager:
             cls._instance = None
 
 
-def create_app() -> 'FastAPI':
+def create_app() -> FastAPI:
     """Create FastAPI application with dashboard routes."""
     from contextlib import asynccontextmanager
     from .redisapi import RedisConnection
@@ -519,6 +548,21 @@ def create_app() -> 'FastAPI':
 
 # API endpoint implementations - All use Redis directly for cross-process visibility
 
+<<<<<<< HEAD
+=======
+@asynccontextmanager
+async def _redis_client_context():
+    """Get a temporary Redis client for direct operations and close it afterwards."""
+    from .redisapi import RedisConnection
+    redis = RedisConnection()
+    await redis._ensure_pool()
+    try:
+        yield redis.client
+    finally:
+        await redis.close()
+
+
+>>>>>>> codex/fix-review-findings
 async def _get_all_instances_from_redis(client) -> List[Dict[str, Any]]:
     """Get all registered instances from Redis using SCAN."""
     instances = []
@@ -570,131 +614,157 @@ async def _get_metrics_from_redis(client, instance_id: str) -> Optional[Dict[str
 
 async def get_aggregated_health(client) -> Dict[str, Any]:
     """Get aggregated health from all registered instances."""
+<<<<<<< HEAD
     instances = await _get_all_instances_from_redis(client)
+=======
+    async with _redis_client_context() as client:
+        instances = await _get_all_instances_from_redis(client)
+>>>>>>> codex/fix-review-findings
 
-    total_agents = 0
-    total_timers = 0
-    total_tasks = 0
-    healthy_count = 0
-    now = time.time()
+        total_agents = 0
+        total_timers = 0
+        total_tasks = 0
+        healthy_count = 0
+        now = time.time()
 
-    instance_health = []
+        instance_health = []
 
-    for inst in instances:
-        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+        for inst in instances:
+            metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
 
-        # Check if heartbeat is recent (within 30 seconds)
-        is_healthy = (
-            metrics and
-            (now - metrics.get("last_heartbeat", 0)) < 30
-        )
+            # Check if heartbeat is recent (within 30 seconds)
+            is_healthy = (
+                metrics and
+                (now - metrics.get("last_heartbeat", 0)) < 30
+            )
 
-        if is_healthy:
-            healthy_count += 1
+            if is_healthy:
+                healthy_count += 1
 
-        total_agents += metrics.get("agents", 0) if metrics else 0
-        total_timers += metrics.get("timers", 0) if metrics else 0
-        total_tasks += metrics.get("active_tasks", 0) if metrics else 0
+            total_agents += metrics.get("agents", 0) if metrics else 0
+            total_timers += metrics.get("timers", 0) if metrics else 0
+            total_tasks += metrics.get("active_tasks", 0) if metrics else 0
 
-        instance_health.append({
-            "instance_id": inst.get("instance_id", ""),
-            "name": inst.get("name", "unknown"),
-            "healthy": is_healthy,
-            "metrics": metrics
-        })
+            instance_health.append({
+                "instance_id": inst.get("instance_id", ""),
+                "name": inst.get("name", "unknown"),
+                "healthy": is_healthy,
+                "metrics": metrics
+            })
 
-    return {
-        "status": "healthy" if healthy_count == len(instances) else "degraded",
-        "total_instances": len(instances),
-        "healthy_instances": healthy_count,
-        "total_agents": total_agents,
-        "total_timers": total_timers,
-        "total_active_tasks": total_tasks,
-        "instances": instance_health
-    }
+        return {
+            "status": "healthy" if healthy_count == len(instances) else "degraded",
+            "total_instances": len(instances),
+            "healthy_instances": healthy_count,
+            "total_agents": total_agents,
+            "total_timers": total_timers,
+            "total_active_tasks": total_tasks,
+            "instances": instance_health
+        }
 
 
 async def get_all_instances(client) -> List[Dict[str, Any]]:
     """List all registered App instances."""
+<<<<<<< HEAD
     instances = await _get_all_instances_from_redis(client)
+=======
+    async with _redis_client_context() as client:
+        instances = await _get_all_instances_from_redis(client)
+>>>>>>> codex/fix-review-findings
 
-    result = []
-    now = time.time()
+        result = []
+        now = time.time()
 
-    for inst in instances:
-        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
-        is_active = (
-            metrics and
-            (now - metrics.get("last_heartbeat", 0)) < 30
-        )
+        for inst in instances:
+            metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+            is_active = (
+                metrics and
+                (now - metrics.get("last_heartbeat", 0)) < 30
+            )
 
-        result.append({
-            **inst,
-            "metrics": metrics,
-            "active": is_active
-        })
+            result.append({
+                **inst,
+                "metrics": metrics,
+                "active": is_active
+            })
 
-    return result
+        return result
 
 
 async def get_instance_detail(client, instance_id: str) -> Dict[str, Any]:
     """Get details for a specific instance."""
+<<<<<<< HEAD
     instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
+=======
+    async with _redis_client_context() as client:
+        instance_key = f"{INSTANCES_KEY_PREFIX}{instance_id}"
+>>>>>>> codex/fix-review-findings
 
-    data = await client.get(instance_key)
-    if not data:
-        return {"error": "Instance not found", "instance_id": instance_id}
+        data = await client.get(instance_key)
+        if not data:
+            return {"error": "Instance not found", "instance_id": instance_id}
 
-    if isinstance(data, bytes):
-        data = data.decode('utf-8')
-    instance_data = json.loads(data)
+        if isinstance(data, bytes):
+            data = data.decode('utf-8')
+        instance_data = json.loads(data)
 
-    metrics = await _get_metrics_from_redis(client, instance_id)
+        metrics = await _get_metrics_from_redis(client, instance_id)
 
-    return {
-        "instance": instance_data,
-        "metrics": metrics
-    }
+        return {
+            "instance": instance_data,
+            "metrics": metrics
+        }
 
 
 async def get_all_agents(client) -> List[Dict[str, Any]]:
     """Get all registered agents across instances."""
+<<<<<<< HEAD
     instances = await _get_all_instances_from_redis(client)
+=======
+    async with _redis_client_context() as client:
+        instances = await _get_all_instances_from_redis(client)
+>>>>>>> codex/fix-review-findings
 
-    agents = []
-    for inst in instances:
-        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
-        if metrics and "agents_detail" in metrics:
-            for agent in metrics.get("agents_detail", []):
-                agents.append({
-                    **agent,
-                    "instance_id": inst.get("instance_id", ""),
-                    "instance_name": inst.get("name", "unknown")
-                })
+        agents = []
+        for inst in instances:
+            metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+            if metrics and "agents_detail" in metrics:
+                for agent in metrics.get("agents_detail", []):
+                    agents.append({
+                        **agent,
+                        "instance_id": inst.get("instance_id", ""),
+                        "instance_name": inst.get("name", "unknown")
+                    })
 
-    return agents
+        return agents
 
 
 async def get_all_timers(client) -> List[Dict[str, Any]]:
     """Get all registered timers across instances."""
+<<<<<<< HEAD
     instances = await _get_all_instances_from_redis(client)
+=======
+    async with _redis_client_context() as client:
+        instances = await _get_all_instances_from_redis(client)
+>>>>>>> codex/fix-review-findings
 
-    timers = []
-    for inst in instances:
-        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
-        if metrics and "timers_detail" in metrics:
-            for timer in metrics.get("timers_detail", []):
-                timers.append({
-                    **timer,
-                    "instance_id": inst.get("instance_id", ""),
-                    "instance_name": inst.get("name", "unknown")
-                })
+        timers = []
+        for inst in instances:
+            metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+            if metrics and "timers_detail" in metrics:
+                for timer in metrics.get("timers_detail", []):
+                    timers.append({
+                        **timer,
+                        "instance_id": inst.get("instance_id", ""),
+                        "instance_name": inst.get("name", "unknown")
+                    })
 
-    return timers
+        return timers
 
 
 async def get_storage_contents(client) -> Dict[str, Any]:
     """Get storage contents (keys only for safety)."""
+<<<<<<< HEAD
     # Use SCAN to find all streammachine keys
     keys = []
     cursor = 0
@@ -703,54 +773,74 @@ async def get_storage_contents(client) -> Dict[str, Any]:
             result = await client.scan(cursor, match="streammachine:*", count=100)
         else:
             result = await client.scan(cursor, match="streammachine:*", count=100)
+=======
+    async with _redis_client_context() as client:
 
-        cursor = result[0] if isinstance(result, tuple) else result.cursor
-        scan_keys = result[1] if isinstance(result, tuple) else result.keys
-        keys.extend(scan_keys)
+        # Use SCAN to find all streammachine keys
+        keys = []
+        cursor = 0
+        while True:
+            if _HAS_COREDIS:
+                result = await client.scan(cursor, match="streammachine:*", count=100)
+            else:
+                result = await client.scan(cursor, match="streammachine:*", count=100)
+>>>>>>> codex/fix-review-findings
 
-        if _HAS_COREDIS:
-            if cursor == 0:
-                break
-        else:
-            if not cursor or cursor == b'0':
-                break
+            cursor = result[0] if isinstance(result, tuple) else result.cursor
+            scan_keys = result[1] if isinstance(result, tuple) else result.keys
+            keys.extend(scan_keys)
 
-    # Decode keys and fetch values
-    result = {}
-    for key in keys[:100]:  # Limit to 100 keys
-        try:
-            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
-            data = await client.get(key)
-            if data:
-                if isinstance(data, bytes):
-                    data = data.decode('utf-8')
-                result[key_str] = data
-        except Exception as e:
-            result[key_str if 'key_str' in dir() else key] = f"Error reading: {e}"
+            if _HAS_COREDIS:
+                if cursor == 0:
+                    break
+            else:
+                if not cursor or cursor == b'0':
+                    break
 
-    return {
-        "total_keys": len(keys),
-        "contents": result
-    }
+        # Decode keys and fetch values
+        result = {}
+        for key in keys[:100]:  # Limit to 100 keys
+            try:
+                key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+                data = await client.get(key)
+                if data:
+                    if isinstance(data, bytes):
+                        data = data.decode('utf-8')
+                    result[key_str] = data
+            except Exception as e:
+                result[key_str if 'key_str' in dir() else key] = f"Error reading: {e}"
+
+        return {
+            "total_keys": len(keys),
+            "contents": result
+        }
 
 
 async def get_stream_info(client) -> List[Dict[str, Any]]:
     """Get Redis stream information."""
+<<<<<<< HEAD
     # Get stream info from registered instances
     instances = await _get_all_instances_from_redis(client)
     streams = []
+=======
+    async with _redis_client_context() as client:
 
-    for inst in instances:
-        metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
-        if metrics and "streams" in metrics:
-            for stream in metrics.get("streams", []):
-                streams.append({
-                    "name": stream,
-                    "instance_id": inst.get("instance_id", ""),
-                    "instance_name": inst.get("name", "unknown")
-                })
+        # Get stream info from registered instances
+        instances = await _get_all_instances_from_redis(client)
+        streams = []
+>>>>>>> codex/fix-review-findings
 
-    return streams
+        for inst in instances:
+            metrics = await _get_metrics_from_redis(client, inst.get("instance_id", ""))
+            if metrics and "streams" in metrics:
+                for stream in metrics.get("streams", []):
+                    streams.append({
+                        "name": stream,
+                        "instance_id": inst.get("instance_id", ""),
+                        "instance_name": inst.get("name", "unknown")
+                    })
+
+        return streams
 
 
 def get_dashboard_html() -> str:

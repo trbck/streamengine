@@ -66,7 +66,7 @@ all = [
 ]
 
 [project.scripts]
-streammachine-mcp = "streammachine.mcp_server:main"
+streammachine-mcp = "streammachine.mcp_entry:main"
 
 [project.urls]
 Homepage = "https://github.com/anthropics/streammachine"
