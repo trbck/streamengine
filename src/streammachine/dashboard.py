@@ -200,6 +200,27 @@ class DashboardManager:
         self._release_script_sha = await client.script_load(RELEASE_LOCK_SCRIPT)
         logger.debug("Loaded lock safety scripts into Redis")
 
+    @staticmethod
+    def _lock_value_matches(current: Any, token: str) -> bool:
+        """Return True when the stored Redis lock value matches our token."""
+        if current is None:
+            return False
+        if isinstance(current, bytes):
+            current = current.decode()
+        return current == token
+
+    async def _shutdown_server_task(self, timeout: float = 5.0) -> None:
+        """Signal the dashboard server to exit and await completion."""
+        if self._server is not None:
+            self._server.should_exit = True
+
+        if self._server_task is not None and not self._server_task.done():
+            try:
+                await asyncio.wait_for(self._server_task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Server shutdown timed out, cancelling")
+                self._server_task.cancel()
+
     async def try_become_master(self, port: int, host: str, app_instance_id: str) -> bool:
         """
         Atomically acquire dashboard master lock via Redis SETNX.
@@ -241,7 +262,9 @@ class DashboardManager:
                     # Load Lua scripts for safe lock operations
                     await self._load_scripts(client)
                 except Exception:
-                    await client.delete(LOCK_KEY)
+                    current = await client.get(LOCK_KEY)
+                    if self._lock_value_matches(current, self._lock_token):
+                        await client.delete(LOCK_KEY)
                     self._lock_token = None
                     raise
 
@@ -298,7 +321,7 @@ class DashboardManager:
             else:
                 # Fallback: check then delete (not atomic but better than nothing)
                 current = await client.get(LOCK_KEY)
-                if current and current.decode() == self._lock_token:
+                if self._lock_value_matches(current, self._lock_token):
                     await client.delete(LOCK_KEY)
                     released = True
                     logger.info("Released dashboard lock")
@@ -334,25 +357,27 @@ class DashboardManager:
                         )
                         if not result:
                             logger.warning("Lock ownership lost during renewal")
-                            if self._server is not None:
-                                self._server.should_exit = True
-                            if self._server_task is not None:
-                                await self._server_task
-                            self._is_master = False
-                            self._lock_token = None
+                            try:
+                                await self._shutdown_server_task()
+                            finally:
+                                self._is_master = False
+                                self._lock_token = None
+                                self._master_info = None
+                            break
                     else:
                         # Fallback: check then expire (not atomic)
                         current = await client.get(LOCK_KEY)
-                        if current and current.decode() == self._lock_token:
+                        if self._lock_value_matches(current, self._lock_token):
                             await client.expire(LOCK_KEY, LOCK_TTL)
                         else:
                             logger.warning("Lock ownership lost")
-                            if self._server is not None:
-                                self._server.should_exit = True
-                            if self._server_task is not None:
-                                await self._server_task
-                            self._is_master = False
-                            self._lock_token = None
+                            try:
+                                await self._shutdown_server_task()
+                            finally:
+                                self._is_master = False
+                                self._lock_token = None
+                                self._master_info = None
+                            break
 
                     logger.debug("Dashboard heartbeat renewed")
 
@@ -403,7 +428,6 @@ class DashboardManager:
 
         # Signal uvicorn to shutdown gracefully
         if self._server is not None:
-            self._server.should_exit = True
             logger.debug("Signaled uvicorn server to shutdown")
 
         # Cancel heartbeat task
@@ -415,12 +439,7 @@ class DashboardManager:
                 pass
 
         # Wait for server task to finish (with timeout)
-        if self._server_task and not self._server_task.done():
-            try:
-                await asyncio.wait_for(self._server_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("Server shutdown timed out, cancelling")
-                self._server_task.cancel()
+        await self._shutdown_server_task()
 
         # Release lock after server is stopped
         await self.release_lock()

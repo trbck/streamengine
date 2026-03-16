@@ -438,6 +438,31 @@ class TestLockSafety:
         DashboardManager.reset_instance()
 
     @pytest.mark.asyncio
+    async def test_try_become_master_does_not_delete_newer_lock_on_script_error(self):
+        """Test that script-load cleanup preserves a lock owned by another instance."""
+        DashboardManager.reset_instance()
+
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.set = AsyncMock(return_value=True)
+        mock_client.script_load = AsyncMock(side_effect=RuntimeError("load failed"))
+        mock_client.get = AsyncMock(return_value=b"other-token")
+        mock_client.delete = AsyncMock()
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+
+        result = await manager.try_become_master(8000, "localhost", "test_id")
+
+        assert result is False
+        mock_client.delete.assert_not_called()
+        assert manager.is_master() is False
+        assert manager._lock_token is None
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
     async def test_heartbeat_lock_loss_stops_server(self):
         """Test that heartbeat renewal loss shuts down the running server."""
         DashboardManager.reset_instance()
@@ -464,6 +489,41 @@ class TestLockSafety:
         assert manager._server.should_exit is True
         assert manager.is_master() is False
         assert manager._lock_token is None
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_lock_loss_cancels_hung_server_task(self):
+        """Test that lock-loss shutdown uses the same timeout/cancel flow as stop_server."""
+        DashboardManager.reset_instance()
+
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.evalsha = AsyncMock(return_value=0)
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+        manager._renew_script_sha = b"sha"
+        manager._is_master = True
+        manager._lock_token = "token"
+        manager._master_info = {"instance_id": "test_id"}
+        manager._server = MagicMock(should_exit=False)
+        manager._server_task = MagicMock()
+        manager._server_task.done.return_value = False
+
+        async def fast_sleep(_seconds):
+            manager._shutdown_event.set()
+
+        with patch("streammachine.dashboard.asyncio.sleep", new=fast_sleep):
+            with patch("streammachine.dashboard.asyncio.wait_for", AsyncMock(side_effect=asyncio.TimeoutError)):
+                await manager._heartbeat_loop()
+
+        assert manager._server.should_exit is True
+        manager._server_task.cancel.assert_called_once()
+        assert manager.is_master() is False
+        assert manager._lock_token is None
+        assert manager._master_info is None
 
         DashboardManager.reset_instance()
 

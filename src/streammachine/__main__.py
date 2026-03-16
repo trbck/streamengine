@@ -12,6 +12,12 @@ Commands:
 import sys
 
 
+def _is_missing_mcp_dependency(exc: ImportError) -> bool:
+    """Return True when the import error comes from the optional MCP package."""
+    missing_name = getattr(exc, "name", None)
+    return missing_name == "mcp" or (missing_name is not None and missing_name.startswith("mcp."))
+
+
 def main():
     """CLI entry point."""
     args = sys.argv[1:]
@@ -21,6 +27,8 @@ def main():
         try:
             from .mcp_server import main as mcp_main
         except ImportError as exc:
+            if not _is_missing_mcp_dependency(exc):
+                raise
             print(
                 "MCP support is not installed. Install with `pip install streammachine[mcp]`.",
                 file=sys.stderr,

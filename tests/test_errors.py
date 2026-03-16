@@ -9,11 +9,14 @@ These tests verify graceful error handling for:
 - Concurrent access to Storage
 """
 import asyncio
-import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 import uuid
 
+import pytest
+
 from streammachine import App, RedisConnection, Storage, Message
+from streammachine import __main__ as cli_main
+from streammachine import mcp_entry
 from streammachine.models import ConsumerConfig, TimerConfig
 
 
@@ -194,6 +197,53 @@ class TestConsumerGroupFailures:
             # Consumer should handle empty stream gracefully
             # The actual behavior is that GroupConsumer with timeout
             # will raise StopAsyncIteration when no messages after timeout
+
+
+class TestMCPEntryPointErrors:
+    """Tests for MCP optional dependency error handling."""
+
+    @staticmethod
+    def _fake_import(target_name: str, exc: ImportError):
+        real_import = __import__
+
+        def importer(name, globals=None, locals=None, fromlist=(), level=0):
+            package = (globals or {}).get("__package__")
+            if name == target_name or (name == "mcp_server" and package == "streammachine"):
+                raise exc
+            return real_import(name, globals, locals, fromlist, level)
+
+        return importer
+
+    def test_cli_main_reraises_unrelated_importerror(self, monkeypatch):
+        """Test that unrelated import errors are not masked as missing MCP extras."""
+        exc = ImportError("boom")
+        exc.name = "streammachine.internal"
+        monkeypatch.setattr("builtins.__import__", self._fake_import("mcp_server", exc))
+        monkeypatch.setattr(cli_main.sys, "argv", ["streammachine", "mcp"])
+
+        with pytest.raises(ImportError, match="boom"):
+            cli_main.main()
+
+    def test_cli_main_handles_missing_mcp_dependency(self, monkeypatch, capsys):
+        """Test that missing MCP dependency produces the install hint."""
+        exc = ModuleNotFoundError("No module named 'mcp'")
+        exc.name = "mcp"
+        monkeypatch.setattr("builtins.__import__", self._fake_import("mcp_server", exc))
+        monkeypatch.setattr(cli_main.sys, "argv", ["streammachine", "mcp"])
+
+        with pytest.raises(SystemExit, match="1"):
+            cli_main.main()
+
+        assert "Install with `pip install streammachine[mcp]`" in capsys.readouterr().err
+
+    def test_mcp_entry_reraises_unrelated_importerror(self, monkeypatch):
+        """Test that mcp_entry preserves unrelated import failures."""
+        exc = ImportError("boom")
+        exc.name = "streammachine.internal"
+        monkeypatch.setattr("builtins.__import__", self._fake_import("streammachine.mcp_server", exc))
+
+        with pytest.raises(ImportError, match="boom"):
+            mcp_entry.main()
 
 
 class TestGracefulShutdown:

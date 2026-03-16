@@ -34,14 +34,12 @@ def _bind_shared_storage(shared_dict, command_queue) -> Storage:
     return storage
 
 
-def increment_counter(n_times: int, shared_dict, command_queue) -> None:
+def increment_counter(worker_id: int, n_times: int, shared_dict, command_queue) -> None:
     """Run in a separate process to increment the shared counter."""
     storage = _bind_shared_storage(shared_dict, command_queue)
 
     async def do_increment() -> None:
-        for _ in range(n_times):
-            current = await storage.read("shared_counter", default=0)
-            await storage.write("shared_counter", current + 1)
+        await storage.write(f"worker_count:{worker_id}", n_times)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -61,10 +59,10 @@ def worker_task(task_id: int, shared_dict, command_queue) -> dict:
     storage = _bind_shared_storage(shared_dict, command_queue)
 
     async def do_work() -> dict:
-        results = await storage.read("task_results", default=[])
-        results.append({"task_id": task_id, "done": True})
-        await storage.write("task_results", results)
-        return results
+        result_key = f"task_result:{task_id}"
+        result_value = {"task_id": task_id, "done": True}
+        await storage.write(result_key, result_value)
+        return result_value
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -90,16 +88,13 @@ class TestStorageMultiprocess:
         storage._ensure_manager()
 
         try:
-            # Write initial value
-            await storage.write("shared_counter", 0)
-
             # Run multiple processes
             ctx = multiprocessing.get_context("spawn")
             processes = []
-            for _ in range(3):
+            for worker_id in range(3):
                 p = ctx.Process(
                     target=increment_counter,
-                    args=(10, storage.shared_dict, storage.command_queue),
+                    args=(worker_id, 10, storage.shared_dict, storage.command_queue),
                 )
                 p.start()
                 processes.append(p)
@@ -107,12 +102,14 @@ class TestStorageMultiprocess:
             # Wait for all processes
             for p in processes:
                 p.join(timeout=10)
+                assert p.exitcode == 0
 
-            # Verify counter was incremented
-            final_value = await storage.read("shared_counter")
-            # Note: Due to race conditions, final value may not be exactly 30
-            # but should be > 0 if sharing worked
-            assert final_value > 0
+            # Verify each worker wrote its exact count into shared storage
+            worker_counts = {
+                str(worker_id): await storage.read(f"worker_count:{worker_id}")
+                for worker_id in range(3)
+            }
+            assert worker_counts == {"0": 10, "1": 10, "2": 10}
 
         finally:
             Storage.reset_instance()
@@ -228,8 +225,6 @@ class TestProcessPoolExecutor:
         storage._ensure_manager()
 
         try:
-            await storage.write("task_results", [])
-
             # Run tasks in process pool
             from concurrent.futures import ProcessPoolExecutor
 
@@ -248,12 +243,18 @@ class TestProcessPoolExecutor:
                     )
                     for i in range(3)
                 ]
-                await asyncio.gather(*futures)
+                results = await asyncio.gather(*futures)
 
-            # Verify results were shared
-            results = await storage.read("task_results")
-            # Results should contain entries from workers
-            assert len(results) >= 1  # At least some results should be present
+            # Verify each worker result was stored under its own key
+            assert sorted(results, key=lambda item: item["task_id"]) == [
+                {"task_id": 0, "done": True},
+                {"task_id": 1, "done": True},
+                {"task_id": 2, "done": True},
+            ]
+            stored_results = await asyncio.gather(
+                *(storage.read(f"task_result:{i}") for i in range(3))
+            )
+            assert stored_results == results
 
         finally:
             Storage.reset_instance()
