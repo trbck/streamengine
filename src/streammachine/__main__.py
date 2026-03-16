@@ -18,7 +18,14 @@ def main():
 
     if not args or args[0] == "mcp":
         # Run MCP server
-        from .mcp_server import main as mcp_main
+        try:
+            from .mcp_server import main as mcp_main
+        except ImportError as exc:
+            print(
+                "MCP support is not installed. Install with `pip install streammachine[mcp]`.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
         mcp_main()
     elif args[0] == "--help" or args[0] == "-h":
         print("StreamMachine CLI")

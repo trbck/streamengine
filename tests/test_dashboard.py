@@ -2,9 +2,10 @@
 Tests for streammachine.dashboard module.
 """
 import asyncio
-import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # Skip all tests if FastAPI is not installed
 pytest.importorskip("fastapi")
@@ -13,14 +14,10 @@ from streammachine.dashboard import (
     DashboardManager,
     InstanceInfo,
     InstanceMetrics,
-    start_dashboard,
-    stop_dashboard,
     create_app,
     get_dashboard_html,
-    INSTANCES_KEY_PREFIX,
-    METRICS_KEY_PREFIX,
-    MASTER_KEY,
-    LOCK_KEY,
+    start_dashboard,
+    stop_dashboard,
 )
 
 
@@ -204,8 +201,9 @@ class TestAPIEndpoints:
     @pytest.mark.asyncio
     async def test_get_metrics_from_redis(self):
         """Test _get_metrics_from_redis helper."""
-        from streammachine.dashboard import _get_metrics_from_redis
         import json
+
+        from streammachine.dashboard import _get_metrics_from_redis
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=json.dumps({
@@ -326,8 +324,9 @@ class TestConfigValidation:
 
     def test_dashboard_port_validation(self):
         """Test that invalid dashboard_port raises error."""
-        from streammachine.models import AppConfig
         import pytest
+
+        from streammachine.models import AppConfig
 
         with pytest.raises(ValueError):
             AppConfig(name="test", dashboard_port=0)
@@ -337,8 +336,9 @@ class TestConfigValidation:
 
     def test_dashboard_refresh_interval_validation(self):
         """Test that invalid dashboard_refresh_interval raises error."""
-        from streammachine.models import AppConfig
         import pytest
+
+        from streammachine.models import AppConfig
 
         with pytest.raises(ValueError):
             AppConfig(name="test", dashboard_refresh_interval=0)
@@ -401,7 +401,6 @@ class TestLockSafety:
 
         # Become master first
         await manager.try_become_master(8000, "localhost", "test_id")
-        token = manager._lock_token
 
         # Release should use token
         await manager.release_lock()
@@ -434,6 +433,37 @@ class TestLockSafety:
 
         # Release should detect ownership loss
         await manager.release_lock()
+        mock_client.delete.assert_not_called()
+
+        DashboardManager.reset_instance()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_lock_loss_stops_server(self):
+        """Test that heartbeat renewal loss shuts down the running server."""
+        DashboardManager.reset_instance()
+
+        mock_redis = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.evalsha = AsyncMock(return_value=0)
+        mock_redis.client = mock_client
+
+        manager = DashboardManager()
+        manager._redis = mock_redis
+        manager._renew_script_sha = b"sha"
+        manager._is_master = True
+        manager._lock_token = "token"
+        manager._server = MagicMock(should_exit=False)
+        manager._server_task = asyncio.create_task(asyncio.sleep(0))
+
+        async def fast_sleep(_seconds):
+            manager._shutdown_event.set()
+
+        with patch("streammachine.dashboard.asyncio.sleep", new=fast_sleep):
+            await manager._heartbeat_loop()
+
+        assert manager._server.should_exit is True
+        assert manager.is_master() is False
+        assert manager._lock_token is None
 
         DashboardManager.reset_instance()
 
@@ -444,8 +474,8 @@ class TestRedisDirectStorage:
     @pytest.mark.asyncio
     async def test_register_instance_stores_in_redis(self):
         """Test that register_instance writes to Redis with TTL."""
+
         from streammachine.dashboard import register_instance
-        import json
 
         mock_client = AsyncMock()
         mock_client.set = AsyncMock()
@@ -474,8 +504,8 @@ class TestRedisDirectStorage:
     @pytest.mark.asyncio
     async def test_update_heartbeat_sets_ttl(self):
         """Test that update_heartbeat refreshes TTL."""
+
         from streammachine.dashboard import update_heartbeat
-        import json
 
         mock_client = AsyncMock()
         mock_client.expire = AsyncMock()
@@ -486,6 +516,25 @@ class TestRedisDirectStorage:
         # Verify TTL was refreshed
         assert mock_client.expire.called
         assert mock_client.set.called
+
+    @pytest.mark.asyncio
+    async def test_dashboard_helpers_close_temporary_redis_connections(self):
+        """Test that dashboard helper functions close temporary Redis connections."""
+        from streammachine.dashboard import get_all_instances
+
+        mock_client = AsyncMock()
+        mock_client.scan = AsyncMock(return_value=(0, []))
+
+        mock_redis = MagicMock()
+        mock_redis.client = mock_client
+        mock_redis._ensure_pool = AsyncMock()
+        mock_redis.close = AsyncMock()
+
+        with patch("streammachine.redisapi.RedisConnection", return_value=mock_redis):
+            instances = await get_all_instances()
+
+        assert instances == []
+        mock_redis.close.assert_awaited_once()
 
 
 class TestDashboardDisabled:

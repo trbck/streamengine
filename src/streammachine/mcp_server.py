@@ -24,21 +24,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Optional
 
 # MCP SDK imports
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Tool,
-    TextContent,
-    ImageContent,
     EmbeddedResource,
-    Resource,
-    Prompt,
     GetPromptResult,
+    ImageContent,
+    Prompt,
+    Resource,
+    TextContent,
+    Tool,
 )
-import mcp.server.session
 
 # StreamMachine imports
 from .redisapi import RedisConnection
@@ -57,6 +57,7 @@ server = Server("streammachine")
 # Global state for connections
 _redis: Optional[RedisConnection] = None
 _storage: Optional[Storage] = None
+_ALLOW_UNSAFE_OBJECT_TOOLS = os.environ.get("STREAMMACHINE_ENABLE_UNSAFE_PICKLE_TOOLS") == "1"
 
 
 async def get_redis() -> RedisConnection:
@@ -85,6 +86,19 @@ def _format_response(data: Any, success: bool = True, error: Optional[str] = Non
     }, default=str)
 
 
+def _decode_value(value: Any) -> Any:
+    """Normalize Redis bytes responses to strings where appropriate."""
+    if isinstance(value, bytes):
+        return value.decode()
+    return value
+
+
+def _stream_group_count(info: dict[str, Any]) -> int:
+    """Handle coredis XINFO responses that return groups as either count or list."""
+    groups = info.get("groups", 0)
+    return groups if isinstance(groups, int) else len(groups)
+
+
 # =============================================================================
 # TOOLS
 # =============================================================================
@@ -92,7 +106,7 @@ def _format_response(data: Any, success: bool = True, error: Optional[str] = Non
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available StreamMachine tools."""
-    return [
+    tools = [
         # Redis Stream Tools
         Tool(
             name="stream_send",
@@ -293,20 +307,6 @@ async def list_tools() -> list[Tool]:
 
         # Object Storage Tools (if available)
         Tool(
-            name="obj_get",
-            description="Retrieve a pickled Python object from Redis object storage.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "Key to retrieve",
-                    },
-                },
-                "required": ["key"],
-            },
-        ),
-        Tool(
             name="obj_list",
             description="List keys in Redis object storage matching a pattern.",
             inputSchema={
@@ -336,6 +336,26 @@ async def list_tools() -> list[Tool]:
         ),
     ]
 
+    if _ALLOW_UNSAFE_OBJECT_TOOLS:
+        tools.append(
+            Tool(
+                name="obj_get",
+                description="Retrieve a pickled Python object from Redis object storage.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Key to retrieve",
+                        },
+                    },
+                    "required": ["key"],
+                },
+            )
+        )
+
+    return tools
+
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent | EmbeddedResource]:
@@ -362,8 +382,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             redis = await get_redis()
             await redis._ensure_pool()
             count = arguments.get("count", 10)
-            start = arguments.get("start", "+")  # + means latest
-            results = await redis.client.xrevrange(arguments["stream"], "+", "-", count=count)
+            start = arguments.get("start", "+")
+            results = await redis.client.xrevrange(arguments["stream"], start, "-", count=count)
             messages = []
             for msg_id, data in results:
                 messages.append({
@@ -378,7 +398,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             info = await redis.client.xinfo_stream(arguments["stream"])
             result = {
                 "length": info.get("length", 0),
-                "groups": len(info.get("groups", [])),
+                "groups": _stream_group_count(info),
                 "last_generated_id": str(info.get("last-generated-id", "")),
                 "first_entry": info.get("first-entry"),
                 "last_entry": info.get("last-entry"),
@@ -393,8 +413,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             # Filter for streams only
             streams = []
             for key in keys:
-                key_str = key.decode() if isinstance(key, bytes) else key
-                key_type = await redis.client.type(key)
+                key_str = _decode_value(key)
+                key_type = _decode_value(await redis.client.type(key))
                 if key_type == "stream":
                     streams.append(key_str)
             return [TextContent(type="text", text=_format_response({"streams": streams}))]
@@ -458,6 +478,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             return [TextContent(type="text", text=_format_response({"ping": "pong" if result else "failed"}))]
 
         elif name == "obj_get":
+            if not _ALLOW_UNSAFE_OBJECT_TOOLS:
+                return [TextContent(type="text", text=_format_response(None, success=False, error="obj_get is disabled by default because it deserializes pickle data. Set STREAMMACHINE_ENABLE_UNSAFE_PICKLE_TOOLS=1 to enable it."))]
             from .objstorage.redisobjstore import RedisObjectStorage
             obj_store = RedisObjectStorage()
             try:

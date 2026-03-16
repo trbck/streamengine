@@ -52,7 +52,6 @@ import asyncio
 import logging
 import multiprocessing
 import threading
-from collections import defaultdict
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -94,7 +93,7 @@ class Storage:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    instance = super(Storage, cls).__new__(cls)
+                    instance = super().__new__(cls)
                     instance._init_storage()
                     cls._instance = instance
                     logger.debug("Storage singleton created")
@@ -113,6 +112,7 @@ class Storage:
         self._locks_lock = threading.Lock()  # Protect _key_locks access
         self.lock_reading = False  # By default, don't lock during reading
         self._manager_started = False
+        self._command_handler_future = None
         self._initialized = True
         logger.debug("Storage initialized (manager deferred)")
 
@@ -163,14 +163,21 @@ class Storage:
     async def start(self) -> None:
         """Start the manager and listen for commands asynchronously (in executor)."""
         self._ensure_manager()
+        if self._command_handler_future is not None:
+            return
         loop = asyncio.get_event_loop()
-        self.command_handler = await loop.run_in_executor(None, self.handle_commands)
+        self._command_handler_future = loop.run_in_executor(None, self.handle_commands)
 
     async def terminate(self) -> None:
         """Terminate the command handler process."""
         if not self._manager_started:
             return
         await asyncio.to_thread(self.command_queue.put, ("terminate", [], {}))
+        if self._command_handler_future is not None:
+            try:
+                await self._command_handler_future
+            finally:
+                self._command_handler_future = None
         logger.debug("Storage termination signal sent")
 
     def stop(self) -> None:
@@ -187,6 +194,12 @@ class Storage:
             logger.debug("Storage manager shut down")
         except Exception as e:
             logger.warning(f"Error shutting down storage manager: {e}")
+        finally:
+            self._command_handler_future = None
+            self._manager_started = False
+            self.manager = None
+            self.shared_dict = None
+            self.command_queue = None
 
     async def write(self, key: str, value: Any) -> None:
         """
