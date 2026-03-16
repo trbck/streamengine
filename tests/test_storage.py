@@ -175,15 +175,23 @@ class TestStorageLazyInit:
 class TestStorageCommandHandler:
     """Tests for Storage command handler shutdown behavior."""
 
-    def test_handle_commands_exits_on_broken_pipe(self, caplog):
-        """Test that manager shutdown pipe errors stop the loop cleanly."""
+    @pytest.mark.parametrize(
+        ("side_effect", "expected_fragment"),
+        [
+            (BrokenPipeError("manager closed"), "manager closed"),
+            (EOFError("queue closed"), "queue closed"),
+        ],
+    )
+    def test_handle_commands_exits_on_shutdown_pipe_errors(self, side_effect, expected_fragment, caplog):
+        """Test that expected manager shutdown pipe errors stop the loop cleanly."""
         Storage.reset_instance()
         storage = Storage()
         storage.command_queue = Mock()
-        storage.command_queue.get.side_effect = BrokenPipeError("manager closed")
+        storage.command_queue.get.side_effect = side_effect
 
         with caplog.at_level("DEBUG"):
             storage.handle_commands()
 
         assert "Command handler exiting after manager shutdown" in caplog.text
+        assert expected_fragment in caplog.text
         Storage.reset_instance()
