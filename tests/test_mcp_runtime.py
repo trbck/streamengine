@@ -119,3 +119,27 @@ async def test_mcp_fast_stream_list_accepts_byte_type_responses():
         payload = json.loads(await mcp_fast_module.stream_list("*"))
 
     assert payload["data"]["streams"] == ["orders"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_tools_omits_ohlc_when_unavailable():
+    """Test that OHLC tools are not listed when FastOHLC is not installed."""
+    with patch.object(mcp_server_module, "_HAS_OHLC", False):
+        tools = await mcp_server_module.list_tools()
+    tool_names = [t.name for t in tools]
+    ohlc_tools = ["ohlc_create", "ohlc_update", "ohlc_get_candles", "ohlc_get_completed",
+                  "ohlc_flush", "ohlc_clear", "ohlc_stats", "ohlc_list"]
+    for tool_name in ohlc_tools:
+        assert tool_name not in tool_names, f"OHLC tool {tool_name} should not be listed when _HAS_OHLC is False"
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_tools_includes_ohlc_when_available():
+    """Test that OHLC tools are listed when FastOHLC is installed."""
+    with patch.object(mcp_server_module, "_HAS_OHLC", True):
+        tools = await mcp_server_module.list_tools()
+    tool_names = [t.name for t in tools]
+    ohlc_tools = ["ohlc_create", "ohlc_update", "ohlc_get_candles", "ohlc_get_completed",
+                  "ohlc_flush", "ohlc_clear", "ohlc_stats", "ohlc_list"]
+    for tool_name in ohlc_tools:
+        assert tool_name in tool_names, f"OHLC tool {tool_name} should be listed when _HAS_OHLC is True"
