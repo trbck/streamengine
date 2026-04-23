@@ -563,7 +563,6 @@ class App:
         """
         t = time.time()
         record["sent"] = t
-        await self.rc._ensure_pool()
         return await self.rc.client.xadd(topic, record)
 
     async def send_batch(self, topic: str, records: List[dict]) -> List:

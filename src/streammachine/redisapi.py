@@ -142,8 +142,6 @@ class RedisConnection:
         self._max_connections = max_connections or REDIS_MAX_CONNECTIONS
         self._use_url = url is not None
         self._client: Optional[Redis[bytes]] = None
-        self._pool_entered: bool = False
-        self._pool_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def client(self) -> Redis[bytes]:
@@ -163,25 +161,8 @@ class RedisConnection:
                 )
         return self._client
 
-    async def _ensure_pool(self) -> None:
-        """Enter the connection pool async context if not already entered.
-
-        coredis 6.x requires the ConnectionPool to be entered as an async
-        context manager before use — this is where _task_group is created.
-
-        Uses an asyncio.Lock to prevent concurrent first-use calls from
-        double-entering the pool.
-        """
-        if self._pool_entered:
-            return
-        async with self._pool_lock:
-            if not self._pool_entered:
-                await self.client.connection_pool.__aenter__()
-                self._pool_entered = True
-
     async def __aenter__(self) -> "RedisConnection":
-        """Async context manager entry — initializes the connection pool."""
-        await self._ensure_pool()
+        """Async context manager entry."""
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
@@ -194,14 +175,11 @@ class RedisConnection:
         if self._client is None:
             return
         try:
-            if self._pool_entered:
-                await self.client.connection_pool.__aexit__(None, None, None)
-                self._pool_entered = False
             await self.client.quit()
             logger.debug("Redis connection closed")
         except Exception as e:
-            # Connection may not have been established (lazy connection),
-            # or pool may not be fully initialized. This is fine during shutdown.
+            # Connection may not have been established (lazy connection).
+            # This is fine during shutdown.
             logger.debug(f"Redis connection close skipped: {e}")
 
     async def consumer(
@@ -229,7 +207,6 @@ class RedisConnection:
         Returns:
             GroupConsumer instance for iterating over messages
         """
-        await self._ensure_pool()
         if isinstance(channel, str):
             channel = [channel]
         return GroupConsumer(
@@ -257,7 +234,6 @@ class RedisConnection:
         Returns:
             List of message IDs from the XADD commands
         """
-        await self._ensure_pool()
         async with self.client.pipeline() as pipe:
             for record in records:
                 pipe.xadd(topic, record)
@@ -271,7 +247,6 @@ class RedisConnection:
             True if connection is healthy, False otherwise
         """
         try:
-            await self._ensure_pool()
             await self.client.ping()
             return True
         except Exception as e:
